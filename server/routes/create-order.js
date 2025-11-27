@@ -1,15 +1,16 @@
 import express from 'express';
-import Razorpay from 'razorpay';
+import { razorpay, razorpayKeyId } from "../config/razorpay.js";
+
 import dotenv from 'dotenv';
 
 dotenv.config();
 
 const router = express.Router();
 
-const razorpay = new Razorpay({
-  key_id: process.env.RAZORPAY_KEY_ID,
-  key_secret: process.env.RAZORPAY_KEY_SECRET,
-});
+// const razorpay = new Razorpay({
+//   key_id: process.env.RAZORPAY_KEY_ID,
+//   key_secret: process.env.RAZORPAY_KEY_SECRET,
+// });
 
 router.post('/create-order', async (req, res) => {
   try {
@@ -20,13 +21,15 @@ router.post('/create-order', async (req, res) => {
     }
 
     const options = {
-      amount, // already in paise
+      amount,
       currency: 'INR',
       receipt: `order_rcptid_${Date.now()}`,
     };
 
     const order = await razorpay.orders.create(options);
-    res.status(200).json(order);
+
+    // ✅ Wrap in { order } to match frontend expectation
+    res.status(200).json({ order });
   } catch (err) {
     console.error('❌ Razorpay order error:', err);
     res.status(500).json({ error: 'Failed to create order' });

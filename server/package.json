@@ -13,7 +13,9 @@
     "dotenv": "^16.6.1",
     "express": "^4.21.2",
     "graphql-request": "^7.2.0",
+    "multer": "^2.0.2",
     "node-fetch": "^3.3.2",
+    "nodemailer": "^7.0.6",
     "razorpay": "^2.9.6",
     "resend": "^4.7.0"
   }
