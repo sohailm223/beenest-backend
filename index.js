@@ -69,7 +69,7 @@ app.use("/api", razorpayRoutes);
 
 
 app.get("/", (req, res) => {
-  res.send("✅ Minimal Razorpay + Hygraph API");
+  res.send("Beenest Magazine Group Backend API is running");
 });
 
 app.listen(PORT, () => {
