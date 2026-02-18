@@ -1,0 +1,11 @@
+{
+  "version": 2,
+  "framework": "other",
+  "buildCommand": "echo \"Backend API - no frontend build\"",
+  "installCommand": "npm install",
+  "functions": {
+    "api/[...path].js": {
+      "runtime": "nodejs20.x"
+    }
+  }
+}
