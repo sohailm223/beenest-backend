@@ -1,88 +1,143 @@
-import express from 'express';
-import fetch from 'node-fetch';
+import express from "express";
+import fetch from "node-fetch";
 
 const router = express.Router();
 
-router.post('/like-magazine', async (req, res) => {
-  const { clerkId, magazineId } = req.body;
+function hygraphRequest(query, variables) {
+  return fetch(process.env.HYGRAPH_API, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${process.env.HYGRAPH_TOKEN}`,
+    },
+    body: JSON.stringify({ query, variables }),
+  });
+}
 
-  console.log("🔥 POST /like-magazine", { clerkId, magazineId });
+async function getOrCreateCustomer({ clerkId, email, name, imageUrl }) {
+  const findRes = await hygraphRequest(
+    `
+      query GetCustomer($clerkId: String!) {
+        customer(where: { clerkId: $clerkId }) {
+          id
+        }
+      }
+    `,
+    { clerkId }
+  );
 
-  try {
-    // 1. Query the customer by Clerk ID
-    const customerQuery = await fetch(process.env.HYGRAPH_API, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${process.env.HYGRAPH_TOKEN}`,
-      },
-      body: JSON.stringify({
-        query: `
-          query GetCustomer($clerkId: String!) {
-            customer(where: { clerkId: $clerkId }) {
+  const findData = await findRes.json();
+  const existingCustomerId = findData?.data?.customer?.id;
+  if (existingCustomerId) return existingCustomerId;
+
+  // Keep flow working for first-time users if profile sync has not run yet.
+  const safeEmail = (email || "").trim() || `${clerkId}@beenest.local`;
+  const safeName = (name || "").trim() || "Beenest User";
+
+  const createRes = await hygraphRequest(
+    `
+      mutation CreateCustomer(
+        $clerkId: String!
+        $email: String!
+        $name: String!
+        $imageUrl: String
+      ) {
+        createCustomer(
+          data: {
+            clerkId: $clerkId
+            email: $email
+            name: $name
+            imageUrl: $imageUrl
+            subscriptionStatus: notAvailable
+          }
+        ) {
+          id
+        }
+        publishManyCustomersConnection(to: PUBLISHED) {
+          edges {
+            node {
               id
             }
           }
-        `,
-        variables: { clerkId },
-      }),
+        }
+      }
+    `,
+    {
+      clerkId,
+      email: safeEmail,
+      name: safeName,
+      imageUrl: imageUrl || null,
+    }
+  );
+
+  const createData = await createRes.json();
+  if (createData?.errors) {
+    throw new Error(JSON.stringify(createData.errors));
+  }
+
+  return createData?.data?.createCustomer?.id || null;
+}
+
+router.post("/like-magazine", async (req, res) => {
+  const { clerkId, magazineId, email, name, imageUrl } = req.body;
+  console.log("POST /like-magazine", { clerkId, magazineId });
+
+  if (!clerkId || !magazineId) {
+    return res.status(400).json({ error: "clerkId and magazineId are required" });
+  }
+
+  try {
+    const customerId = await getOrCreateCustomer({
+      clerkId,
+      email,
+      name,
+      imageUrl,
     });
 
-    const customerData = await customerQuery.json();
-    const customerId = customerData?.data?.customer?.id;
-
     if (!customerId) {
-      console.error("❌ Customer not found in Hygraph");
       return res.status(404).json({ error: "Customer not found" });
     }
 
-    // 2. Connect the magazine to the customer's liked list
-    const likeMutation = await fetch(process.env.HYGRAPH_API, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${process.env.HYGRAPH_TOKEN}`,
-      },
-      body: JSON.stringify({
-  query: `
-    mutation LikeMagazine($customerId: ID!, $magazineId: ID!) {
-      updateCustomer(
-        where: { id: $customerId }
-        data: {
-          likedMagazines: {
-            connect: {
-              where: { id: $magazineId }
+    const likeRes = await hygraphRequest(
+      `
+        mutation LikeMagazine($customerId: ID!, $magazineId: ID!) {
+          updateCustomer(
+            where: { id: $customerId }
+            data: {
+              likedMagazines: {
+                connect: { where: { id: $magazineId } }
+              }
+            }
+          ) {
+            id
+            likedMagazines {
+              id
+              name
             }
           }
+          publishCustomer(where: { id: $customerId }) {
+            id
+          }
         }
-      ) {
-        id
-        likedMagazines {
-          id
-          name
-        }
-      }
-      publishCustomer(where: { id: $customerId }) {
-        id
-      }
+      `,
+      { customerId, magazineId }
+    );
+
+    const likeData = await likeRes.json();
+    if (likeData?.errors) {
+      return res.status(500).json({
+        error: "Failed to like magazine",
+        details: likeData.errors,
+      });
     }
-  `,
-  variables: { customerId, magazineId },
-}),
+
+    return res.status(200).json({
+      message: "Magazine liked",
+      result: likeData.data,
     });
-
-    const likeData = await likeMutation.json();
-
-    if (likeData.errors) {
-      console.error("❌ GraphQL Errors:", likeData.errors);
-      return res.status(500).json({ error: "Failed to like magazine", details: likeData.errors });
-    }
-
-    console.log("✅ Magazine liked:", likeData.data);
-    res.status(200).json({ message: "Magazine liked", result: likeData.data });
   } catch (err) {
-    console.error("❌ Server error:", err);
-    res.status(500).json({ error: "Internal server error" });
+    console.error("like-magazine error:", err);
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
