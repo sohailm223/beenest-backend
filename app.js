@@ -24,7 +24,15 @@ import razorpayRoutes from "./routes/razorpay.js";
 
 const app = express();
 
-app.use(cors());
+// Keep CORS open for local frontend + deployed frontend/backends and allow preflight.
+app.use(
+  cors({
+    origin: true,
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"],
+  })
+);
+app.options("*", cors());
 app.use(express.json());
 app.use("/uploads", express.static("uploads"));
 
