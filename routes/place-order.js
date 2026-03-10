@@ -1,23 +1,46 @@
 import express from "express";
 import fetch from "node-fetch";
-import { razorpay, razorpayKeyId } from "../config/razorpay.js";
-
+import { clerkClient } from "@clerk/clerk-sdk-node";
+import { razorpay } from "../config/razorpay.js";
 import { sendOrderEmails } from "../utils/sendEmail.js";
+import { FREE_ORDER_LIMIT } from "../config/subscriptionBenefits.js";
+import { resolveSubscriptionForUser } from "../utils/subscriptionState.js";
 
 const router = express.Router();
 
-// const razorpay = new Razorpay({
-//   key_id: process.env.RAZORPAY_KEY_ID,
-//   key_secret: process.env.RAZORPAY_KEY_SECRET,
-// });
+function getActiveSubscriptionMetadata(user) {
+  const subscription = user?.publicMetadata?.subscription || {};
+  const status = String(subscription?.status || "").toLowerCase();
+  const expiresAt = subscription?.expiresAt
+    ? new Date(subscription.expiresAt).getTime()
+    : 0;
+  const freeOrderUsed = Number(subscription?.freeOrderUsed || 0);
+
+  return {
+    subscription,
+    isActive: status === "active" && expiresAt > Date.now(),
+    freeOrderUsed,
+  };
+}
+
+function isActiveSubscription(subscription = {}) {
+  const status = String(subscription?.status || "").toLowerCase();
+  const expiresAt = subscription?.expiresAt ? new Date(subscription.expiresAt).getTime() : 0;
+  return status === "active" && expiresAt > Date.now();
+}
 
 router.post("/place-order", async (req, res) => {
   const { clerkId, cartItems, shippingInfo, total, paymentMethod } = req.body;
 
   try {
-    console.log("📥 Received order data:", req.body);
+    console.log("Received order data:", req.body);
 
-    // 1️⃣ Get Customer
+    const isFreeSubscriptionOrder =
+      paymentMethod === "subscription-free" || Number(total || 0) === 0;
+    const hygraphPaymentMethod = paymentMethod === "online" ? "online" : "cod";
+    const normalizedTotal = isFreeSubscriptionOrder ? 0 : Number(total || 0);
+
+    // 1) Get customer by Clerk ID
     const getCustomer = await fetch(process.env.HYGRAPH_API, {
       method: "POST",
       headers: {
@@ -38,22 +61,57 @@ router.post("/place-order", async (req, res) => {
 
     const customerData = await getCustomer.json();
     const customerId = customerData?.data?.customer?.id;
-    if (!customerId) return res.status(404).json({ error: "Customer not found" });
+    if (!customerId) {
+      return res.status(404).json({ error: "Customer not found" });
+    }
 
-    const orderStatus = paymentMethod === "online" ? "paid" : "cod";
+    let clerkUser = null;
+    if (isFreeSubscriptionOrder) {
+      const resolved = await resolveSubscriptionForUser(clerkId, { syncClerk: true });
+      clerkUser = resolved.clerkUser;
+      const freeOrderUsed = Number(resolved?.subscription?.freeOrderUsed || 0);
+      const isActive = isActiveSubscription(resolved?.subscription);
 
-    // 2️⃣ (If Online Payment) Create Razorpay Order
+      if (!isActive) {
+        return res.status(403).json({
+          error: "Active membership required for free order",
+        });
+      }
+
+      if (freeOrderUsed >= FREE_ORDER_LIMIT) {
+        return res.status(403).json({
+          error: "Free order limit reached. Please continue with paid checkout.",
+        });
+      }
+
+      const allowedIssueIds = resolved?.entitlements?.issueIds || [];
+      const hasAllowedIssuesOnly =
+        Array.isArray(cartItems) &&
+        cartItems.length > 0 &&
+        cartItems.every((item) => allowedIssueIds.includes(item?.id));
+
+      if (!hasAllowedIssuesOnly) {
+        return res.status(403).json({
+          error: "Membership free order is only available for issues assigned to your plan slots.",
+        });
+      }
+    }
+
+    const orderStatus =
+      paymentMethod === "online" || isFreeSubscriptionOrder ? "paid" : "cod";
+
+    // 2) Create Razorpay order only for paid online checkout
     let razorpayOrderId = null;
-    if (paymentMethod === "online") {
+    if (paymentMethod === "online" && normalizedTotal > 0) {
       const razorpayOrder = await razorpay.orders.create({
-        amount: total * 100, // in paise
+        amount: normalizedTotal * 100,
         currency: "INR",
         receipt: `receipt_${Date.now()}`,
       });
       razorpayOrderId = razorpayOrder.id;
     }
 
-    // 3️⃣ Create Hygraph Order
+    // 3) Create Hygraph order
     const orderRes = await fetch(process.env.HYGRAPH_API, {
       method: "POST",
       headers: {
@@ -94,26 +152,28 @@ router.post("/place-order", async (req, res) => {
         `,
         variables: {
           clerkId,
-          totalAmount: total,
+          totalAmount: normalizedTotal,
           shippingName: shippingInfo.name,
           shippingEmail: shippingInfo.email,
           shippingPhone: shippingInfo.phone,
           shippingAddress: shippingInfo.address,
-          paymentMethod,
+          paymentMethod: hygraphPaymentMethod,
           customerId,
-          razorPayCheckoutId: razorpayOrderId || null, // ✅ Must match camelCase
-          orderStatus, // ✅ Added missing field
+          razorPayCheckoutId: razorpayOrderId || null,
+          orderStatus,
         },
       }),
     });
 
     const orderData = await orderRes.json();
-    console.log("📤 Hygraph createOrder response:", JSON.stringify(orderData, null, 2));
+    console.log("Hygraph createOrder response:", JSON.stringify(orderData, null, 2));
 
     const orderId = orderData?.data?.createOrder?.id;
-    if (!orderId) return res.status(500).json({ error: "Failed to create order" });
+    if (!orderId) {
+      return res.status(500).json({ error: "Failed to create order" });
+    }
 
-    // 4️⃣ Create Order Items
+    // 4) Create order items
     for (const item of cartItems) {
       await fetch(process.env.HYGRAPH_API, {
         method: "POST",
@@ -138,7 +198,7 @@ router.post("/place-order", async (req, res) => {
           `,
           variables: {
             quantity: 1,
-            total: item.price,
+            total: isFreeSubscriptionOrder ? 0 : item.price,
             magazineId: item.id,
             orderId,
           },
@@ -146,51 +206,67 @@ router.post("/place-order", async (req, res) => {
       });
     }
 
-    // 5️⃣ Remove Purchased Items from Cart
-await fetch(process.env.HYGRAPH_API, {
-  method: "POST",
-  headers: {
-    "Content-Type": "application/json",
-    Authorization: `Bearer ${process.env.HYGRAPH_TOKEN}`,
-  },
-  body: JSON.stringify({
-    query: `
-      mutation RemoveFromCart($id: ID!, $disconnectItems: [MagazineWhereUniqueInput!]) {
-        updateCustomer(
-          where: { id: $id }
-          data: { cartMagazines: { disconnect: $disconnectItems } }
-        ) {
-          id
-        }
-        publishCustomer(where: { id: $id }) {
-          id
-        }
-      }
-    `,
-    variables: {
-      id: customerId,
-      disconnectItems: cartItems.map((item) => ({ id: item.id })),
-    },
-  }),
-});
+    // 5) Remove purchased items from cart
+    await fetch(process.env.HYGRAPH_API, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${process.env.HYGRAPH_TOKEN}`,
+      },
+      body: JSON.stringify({
+        query: `
+          mutation RemoveFromCart($id: ID!, $disconnectItems: [MagazineWhereUniqueInput!]) {
+            updateCustomer(
+              where: { id: $id }
+              data: { cartMagazines: { disconnect: $disconnectItems } }
+            ) {
+              id
+            }
+            publishCustomer(where: { id: $id }) {
+              id
+            }
+          }
+        `,
+        variables: {
+          id: customerId,
+          disconnectItems: cartItems.map((item) => ({ id: item.id })),
+        },
+      }),
+    });
 
-    // 6️⃣ Send Email
+    // 6) Send customer + admin email
     await sendOrderEmails({
       userEmail: shippingInfo.email,
       userName: shippingInfo.name,
       orderId,
-      totalAmount: total,
+      totalAmount: normalizedTotal,
+      cartItems,
+      shippingInfo,
+      paymentMethod,
     });
 
-    // 7️⃣ Response
+    if (isFreeSubscriptionOrder && clerkUser) {
+      const { subscription, freeOrderUsed } = getActiveSubscriptionMetadata(clerkUser);
+      await clerkClient.users.updateUser(clerkId, {
+        publicMetadata: {
+          ...(clerkUser?.publicMetadata || {}),
+          subscription: {
+            ...subscription,
+            freeOrderLimit: FREE_ORDER_LIMIT,
+            freeOrderUsed: freeOrderUsed + 1,
+          },
+        },
+      });
+    }
+
+    // 7) Success response
     return res.status(200).json({
       success: true,
       orderId,
       razorpayOrderId,
     });
-
   } catch (err) {
-    console.error("❌ Order Error:", err);
+    console.error("Order error:", err);
     return res.status(500).json({ error: "Failed to place order" });
   }
 });

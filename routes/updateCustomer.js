@@ -88,6 +88,9 @@ router.post("/update-customer", async (req, res) => {
               state
               zip
             }
+            publishCustomer(where: { clerkId: $clerkId }) {
+              id
+            }
           }
         `,
         variables
@@ -140,6 +143,9 @@ router.post("/update-customer", async (req, res) => {
             city
             state
             zip
+          }
+          publishCustomer(where: { clerkId: $clerkId }) {
+            id
           }
         }
       `,

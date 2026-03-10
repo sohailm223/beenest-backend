@@ -141,4 +141,118 @@ router.post("/like-magazine", async (req, res) => {
   }
 });
 
+router.get("/user-liked-magazines/:clerkId", async (req, res) => {
+  const { clerkId } = req.params;
+
+  if (!clerkId) {
+    return res.status(400).json({ error: "clerkId is required" });
+  }
+
+  try {
+    const likedRes = await hygraphRequest(
+      `
+        query GetUserLikedMagazines($clerkId: String!) {
+          customer(where: { clerkId: $clerkId }) {
+            likedMagazines {
+              id
+              name
+              slug
+            }
+          }
+        }
+      `,
+      { clerkId }
+    );
+
+    const likedData = await likedRes.json();
+    if (likedData?.errors) {
+      return res.status(500).json({
+        error: "Failed to fetch liked magazines",
+        details: likedData.errors,
+      });
+    }
+
+    const likedMagazines = likedData?.data?.customer?.likedMagazines || [];
+    return res.status(200).json({
+      likedMagazines: likedMagazines.map((mag) => ({
+        magazineId: mag.id,
+        ...mag,
+      })),
+    });
+  } catch (err) {
+    console.error("user-liked-magazines error:", err);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+router.post("/unlike-magazine", async (req, res) => {
+  const { clerkId, magazineId } = req.body;
+  console.log("POST /unlike-magazine", { clerkId, magazineId });
+
+  if (!clerkId || !magazineId) {
+    return res.status(400).json({ error: "clerkId and magazineId are required" });
+  }
+
+  try {
+    const findRes = await hygraphRequest(
+      `
+        query GetCustomer($clerkId: String!) {
+          customer(where: { clerkId: $clerkId }) {
+            id
+          }
+        }
+      `,
+      { clerkId }
+    );
+
+    const findData = await findRes.json();
+    const customerId = findData?.data?.customer?.id;
+
+    if (!customerId) {
+      return res.status(404).json({ error: "Customer not found" });
+    }
+
+    const unlikeRes = await hygraphRequest(
+      `
+        mutation UnlikeMagazine($customerId: ID!, $magazineId: ID!) {
+          updateCustomer(
+            where: { id: $customerId }
+            data: {
+              likedMagazines: {
+                disconnect: { id: $magazineId }
+              }
+            }
+          ) {
+            id
+            likedMagazines {
+              id
+              name
+            }
+          }
+          publishCustomer(where: { id: $customerId }) {
+            id
+          }
+        }
+      `,
+      { customerId, magazineId }
+    );
+
+    const unlikeData = await unlikeRes.json();
+    if (unlikeData?.errors) {
+      return res.status(500).json({
+        error: "Failed to unlike magazine",
+        details: unlikeData.errors,
+      });
+    }
+
+    return res.status(200).json({
+      message: "Magazine removed from wishlist",
+      result: unlikeData.data,
+    });
+  } catch (err) {
+    console.error("unlike-magazine error:", err);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
+
 export default router;

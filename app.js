@@ -8,6 +8,7 @@ import removeFromCart from "./routes/remove-from-cart.js";
 import downloadDigitalAsset from "./routes/download-digital-asset.js";
 import placeOrder from "./routes/place-order.js";
 import createOrder from "./routes/create-order.js";
+import placeDigitalOrder from "./routes/place-digital-order.js";
 import hyraph from "./routes/hygraph.js";
 import sendTestEmailRoute from "./routes/send-test-email.js";
 import membershipRoutes from "./routes/membership.js";
@@ -21,6 +22,7 @@ import verifyPaymentRoute from "./routes/verifyPayment.js";
 import configRoutes from "./routes/config.js";
 import getSubscriptionRoutes from "./routes/get-subscription.js";
 import razorpayRoutes from "./routes/razorpay.js";
+import subscriptionStatusRoutes from "./routes/subscription-status.js";
 
 const app = express();
 
@@ -44,6 +46,7 @@ app.use("/api", removeFromCart);
 app.use("/api", downloadDigitalAsset);
 app.use("/api", placeOrder);
 app.use("/api", createOrder);
+app.use("/api", placeDigitalOrder);
 app.use("/send-test-email", sendTestEmailRoute);
 app.use("/api/membership", createMembership);
 app.use("/api/subscription", subscriptionRoutes);
@@ -56,6 +59,7 @@ app.use("/api/verify-payment", verifyPaymentRoute);
 app.use("/api", configRoutes);
 app.use("/api", getSubscriptionRoutes);
 app.use("/api", razorpayRoutes);
+app.use("/api", subscriptionStatusRoutes);
 
 app.get("/", (req, res) => {
   res.send("Beenest Magazine Group Backend API is running");
