@@ -1,10 +1,26 @@
 import express from 'express';
 import fetch from 'node-fetch';
+import { clerkClient } from "@clerk/clerk-sdk-node";
+import { FREE_DIGITAL_LIMIT } from "../config/subscriptionBenefits.js";
+import { resolveSubscriptionForUser } from "../utils/subscriptionState.js";
 
 const router = express.Router();
 
+function getSubscriptionMetadata(user) {
+  const subscription = user?.publicMetadata?.subscription || {};
+  const status = String(subscription?.status || "").toLowerCase();
+  const expiresAt = subscription?.expiresAt ? new Date(subscription.expiresAt).getTime() : 0;
+  const freeDigitalUsed = Number(subscription?.freeDigitalUsed || 0);
+
+  return {
+    subscription,
+    isActive: status === "active" && expiresAt > Date.now(),
+    freeDigitalUsed,
+  };
+}
+
 router.post('/download-digital-asset', async (req, res) => {
-  const { clerkId, magazineId } = req.body;
+  const { clerkId, magazineId, requireActiveMembership = false } = req.body;
 
   try {
     // Step 1: Find the customer
@@ -30,7 +46,7 @@ router.post('/download-digital-asset', async (req, res) => {
     const customerId = customerData?.data?.customer?.id;
     if (!customerId) return res.status(404).json({ error: 'Customer not found' });
 
-    // Step 2: Find the digital asset for that magazine
+    // Step 2: Find the digital asset for that magazine and membership state
     const assetRes = await fetch(process.env.HYGRAPH_API, {
       method: 'POST',
       headers: {
@@ -39,20 +55,84 @@ router.post('/download-digital-asset', async (req, res) => {
       },
       body: JSON.stringify({
         query: `
-          query GetDigitalAsset($magazineId: ID!) {
+          query GetDigitalAsset($magazineId: ID!, $customerId: ID!, $clerkId: String!, $now: DateTime!) {
             digitalAssets(where: { magazine: { id: $magazineId } }) {
               id
               file { url }
               downloadsCount
+              customer(where: { id: $customerId }) {
+                id
+              }
+            }
+            memberships(
+              where: {
+                customer_some: { clerkId_in: [$clerkId] }
+                planStatus: active
+                OR: [{ endDate_gte: $now }, { endDate: null }]
+              }
+            ) {
+              id
             }
           }
         `,
-        variables: { magazineId },
+        variables: {
+          magazineId,
+          customerId,
+          now: new Date().toISOString(),
+          clerkId,
+        },
       }),
     });
 
-    const asset = (await assetRes.json())?.data?.digitalAssets[0];
+    const assetPayload = await assetRes.json();
+    const asset = assetPayload?.data?.digitalAssets?.[0];
     if (!asset) return res.status(404).json({ error: 'Digital asset not found' });
+
+    const alreadyPurchased = Array.isArray(asset.customer) && asset.customer.length > 0;
+    const hasHygraphMembership =
+      Array.isArray(assetPayload?.data?.memberships) && assetPayload.data.memberships.length > 0;
+    let clerkUser = null;
+    let hasResolvedMembership = false;
+    let clerkFreeDigitalUsed = 0;
+    let allowedIssueIds = [];
+
+    if (requireActiveMembership && clerkId) {
+      try {
+        const resolved = await resolveSubscriptionForUser(clerkId, { syncClerk: true });
+        clerkUser = resolved.clerkUser;
+        const status = String(resolved?.subscription?.status || "").toLowerCase();
+        const expiresAt = resolved?.subscription?.expiresAt
+          ? new Date(resolved.subscription.expiresAt).getTime()
+          : 0;
+        hasResolvedMembership = status === "active" && expiresAt > Date.now();
+        clerkFreeDigitalUsed = Number(resolved?.subscription?.freeDigitalUsed || 0);
+        allowedIssueIds = resolved?.entitlements?.issueIds || [];
+      } catch (clerkError) {
+        console.warn("Unable to verify Clerk membership metadata:", clerkError?.message);
+      }
+    }
+
+    const hasActiveMembership = hasHygraphMembership || hasResolvedMembership;
+
+    if (requireActiveMembership && !hasActiveMembership && !alreadyPurchased) {
+      return res.status(403).json({ error: 'Active membership required for free download' });
+    }
+
+    if (requireActiveMembership && !alreadyPurchased && !allowedIssueIds.includes(magazineId)) {
+      return res.status(403).json({
+        error: "This issue is not assigned to your subscription slots.",
+      });
+    }
+
+    if (
+      requireActiveMembership &&
+      !alreadyPurchased &&
+      clerkFreeDigitalUsed >= FREE_DIGITAL_LIMIT
+    ) {
+      return res.status(403).json({
+        error: "Free digital download limit reached. Please purchase this issue.",
+      });
+    }
 
     // Step 3: Update the asset to associate this customer + increment download count
     const updateRes = await fetch(process.env.HYGRAPH_API, {
@@ -76,6 +156,9 @@ router.post('/download-digital-asset', async (req, res) => {
             publishDigitalAsset(where: { id: $assetId }) {
               id
             }
+            publishCustomer(where: { id: $customerId }) {
+              id
+            }
           }
         `,
         variables: {
@@ -91,6 +174,20 @@ router.post('/download-digital-asset', async (req, res) => {
       return res.status(500).json({ error: 'Failed to update download record', details: updateResult.errors });
     }
 
+    if (requireActiveMembership && !alreadyPurchased && clerkUser) {
+      const subscriptionMeta = getSubscriptionMetadata(clerkUser);
+      await clerkClient.users.updateUser(clerkId, {
+        publicMetadata: {
+          ...(clerkUser?.publicMetadata || {}),
+          subscription: {
+            ...subscriptionMeta.subscription,
+            freeDigitalLimit: FREE_DIGITAL_LIMIT,
+            freeDigitalUsed: subscriptionMeta.freeDigitalUsed + 1,
+          },
+        },
+      });
+    }
+
     // Step 4: Return download URL
     res.status(200).json({ fileUrl: asset.file.url });
   } catch (err) {
@@ -100,3 +197,4 @@ router.post('/download-digital-asset', async (req, res) => {
 });
 
 export default router;
+

@@ -1,4 +1,5 @@
 import express from 'express';
+import { sendNewsletterEmails } from '../utils/sendEmail.js';
 const router = express.Router();
 
 // Newsletter subscription endpoint
@@ -13,43 +14,76 @@ router.post('/subscribe', async (req, res) => {
       });
     }
 
-    // Mailchimp configuration
-    const MAILCHIMP_API_KEY = process.env.MAILCHIMP_API_KEY;
-    const MAILCHIMP_SERVER_PREFIX = process.env.MAILCHIMP_SERVER_PREFIX;
-    const MAILCHIMP_AUDIENCE_ID = process.env.MAILCHIMP_AUDIENCE_ID;
+    // Brevo configuration
+    const BREVO_API_KEY =
+      process.env.BREVO_API_KEY ||
+      process.env.BRAVO_API_KEY ||
+      process.env.SENDINBLUE_API_KEY;
+    const rawListId =
+      process.env.BREVO_LIST_ID ||
+      process.env.BRAVO_LIST_ID ||
+      process.env.SENDINBLUE_LIST_ID ||
+      "";
+    const BREVO_LIST_ID = Number(String(rawListId).trim() || 0);
 
-    if (!MAILCHIMP_API_KEY || !MAILCHIMP_SERVER_PREFIX || !MAILCHIMP_AUDIENCE_ID) {
-      return res.status(500).json({ error: 'Server configuration error' });
+    if (!BREVO_API_KEY) {
+      return res.status(500).json({ error: 'Brevo API key is missing on server' });
     }
 
-    // Mailchimp API request
-    const url = `https://${MAILCHIMP_SERVER_PREFIX}.api.mailchimp.com/3.0/lists/${MAILCHIMP_AUDIENCE_ID}/members`;
-    
-    const response = await fetch(url, {
+    const encodedEmail = encodeURIComponent(email);
+    const existingContactRes = await fetch(
+      `https://api.brevo.com/v3/contacts/${encodedEmail}`,
+      {
+        method: 'GET',
+        headers: {
+          'api-key': BREVO_API_KEY,
+          'Content-Type': 'application/json',
+        },
+      }
+    );
+
+    if (existingContactRes.ok) {
+      return res.status(409).json({
+        error: 'You have already subscribed with this email.',
+      });
+    }
+
+    if (existingContactRes.status !== 404) {
+      const lookupError = await existingContactRes.json().catch(() => ({}));
+      return res.status(400).json({
+        error: lookupError?.message || 'Unable to verify existing subscriber',
+      });
+    }
+
+    const brevoPayload = {
+      email,
+      updateEnabled: false,
+    };
+
+    if (Number.isFinite(BREVO_LIST_ID) && BREVO_LIST_ID > 0) {
+      brevoPayload.listIds = [BREVO_LIST_ID];
+    }
+
+    const brevoRes = await fetch('https://api.brevo.com/v3/contacts', {
       method: 'POST',
       headers: {
-        'Authorization': `Basic ${Buffer.from(`anystring:${MAILCHIMP_API_KEY}`).toString('base64')}`,
+        'api-key': BREVO_API_KEY,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({
-        email_address: email,
-        status: 'subscribed'
-      }),
+      body: JSON.stringify(brevoPayload),
     });
 
-    const result = await response.json();
-
-    if (response.ok) {
-      res.status(200).json({ 
-        message: 'Successfully subscribed!'
+    if (!brevoRes.ok) {
+      const brevoError = await brevoRes.json().catch(() => ({}));
+      return res.status(400).json({
+        error: brevoError?.message || 'Subscription failed',
       });
-    } else {
-      const errorMessage = result.title === 'Member Exists' 
-        ? 'This email is already subscribed' 
-        : 'Subscription failed';
-      
-      res.status(400).json({ error: errorMessage });
     }
+
+    await sendNewsletterEmails({ email, source: 'website' });
+    return res.status(200).json({
+      message: 'Successfully subscribed! Check your inbox for confirmation.',
+    });
 
   } catch (error) {
     console.error('Subscription error:', error);

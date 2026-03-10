@@ -1,5 +1,6 @@
 import express from "express";
 import { razorpay, razorpayKeyId, getPlanMapping } from "../config/razorpay.js";
+import { FREE_DIGITAL_LIMIT, FREE_ORDER_LIMIT } from "../config/subscriptionBenefits.js";
 
 const router = express.Router();
 
@@ -7,6 +8,14 @@ router.get("/razorpay-config", (req, res) => {
   return res.json({
     key: razorpayKeyId,
     plans: getPlanMapping(),
+  });
+});
+
+router.get("/subscription-benefits", (req, res) => {
+  return res.json({
+    success: true,
+    freeOrderLimit: FREE_ORDER_LIMIT,
+    freeDigitalLimit: FREE_DIGITAL_LIMIT,
   });
 });
 
