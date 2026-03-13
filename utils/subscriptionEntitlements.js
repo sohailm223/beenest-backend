@@ -53,9 +53,9 @@ export function buildSubscriptionAccessCode(subscriptionId) {
 
 export function parseSubscriptionAccessCode(accessCode) {
   if (!accessCode || typeof accessCode !== "string") return null;
-  const normalized = accessCode.trim();
+  const normalized = accessCode.trim().replace(/\s+/g, "");
   if (!/^BN-/i.test(normalized)) return null;
-  const raw = normalized.slice(3);
+  const raw = normalized.slice(3).replace(/\s+/g, "");
   try {
     const decoded = Buffer.from(raw, "base64url").toString("utf8");
     return decoded || null;
