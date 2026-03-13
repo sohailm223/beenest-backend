@@ -5,7 +5,11 @@ import { razorpay, razorpayKeyId } from "../config/razorpay.js";
 import { clerkClient } from "@clerk/clerk-sdk-node";
 import fetch from "node-fetch";
 import { sendSubscriptionCancelledEmails } from "../utils/sendEmail.js";
-import { parseSubscriptionAccessCode } from "../utils/subscriptionEntitlements.js";
+import {
+  canShareForPlan,
+  normalizePlanKey,
+  parseSubscriptionAccessCode,
+} from "../utils/subscriptionEntitlements.js";
 
 import dotenv from "dotenv";
 
@@ -92,9 +96,11 @@ router.post("/cancel", async (req, res) => {
       });
     }
 
-    await razorpay.subscriptions.cancel(subscriptionId, {
-      cancel_at_cycle_end: false,
-    });
+    if (String(subscriptionId).startsWith("sub_")) {
+      await razorpay.subscriptions.cancel(subscriptionId, {
+        cancel_at_cycle_end: false,
+      });
+    }
 
     const user = await clerkClient.users.getUser(clerkId);
     const existing = user?.publicMetadata || {};
@@ -189,6 +195,9 @@ router.post("/redeem-access-code", async (req, res) => {
           planId
           planStatus
           endDate
+          selectedIssues {
+            id
+          }
         }
         customer(where: { clerkId: $clerkId }) {
           id
@@ -222,11 +231,11 @@ router.post("/redeem-access-code", async (req, res) => {
       return res.status(404).json({ success: false, error: "Customer not found for this user" });
     }
 
-    const plan = String(membership?.planId || "").toLowerCase();
-    if (!plan.includes("premium")) {
+    const planKey = normalizePlanKey(membership?.planId || "");
+    if (!canShareForPlan(planKey)) {
       return res.status(403).json({
         success: false,
-        error: "Access code sharing is available only for premium subscriptions",
+        error: "Access code sharing is available only for bi-annual digital or bundle plans",
       });
     }
 
@@ -280,15 +289,37 @@ router.post("/redeem-access-code", async (req, res) => {
       const existing = user?.publicMetadata || {};
       const existingSubscription = existing?.subscription || {};
 
-      // Keep owner accounts unchanged; shared users cannot cancel the source subscription.
-      if (String(existingSubscription?.accessType || "").toLowerCase() !== "owner") {
+      const isOwnerActive =
+        String(existingSubscription?.status || "").toLowerCase() === "active" &&
+        String(existingSubscription?.accessType || "owner").toLowerCase() === "owner" &&
+        (!existingSubscription?.expiresAt ||
+          new Date(existingSubscription.expiresAt).getTime() > Date.now());
+
+      // Do not override an existing paid owner membership with shared access.
+      if (!isOwnerActive) {
         await clerkClient.users.updateUser(clerkId, {
           publicMetadata: {
             ...existing,
             subscription: {
               ...existingSubscription,
+              status: "active",
+              planKey,
+              plan: membership?.planId || existingSubscription?.plan || "Shared Access",
+              planType: "digital",
+              durationType: "biannual",
+              startedAt: existingSubscription?.startedAt || new Date().toISOString(),
+              expiresAt: membership?.endDate || existingSubscription?.expiresAt || null,
+              printEntitled: false,
+              digitalEntitled: true,
+              canShare: false,
+              issueSlotCount: 2,
+              selectedIssueIds: (membership?.selectedIssues || [])
+                .map((item) => item?.id)
+                .filter(Boolean),
               accessType: "shared",
+              paymentProvider: "razorpay",
               subscriptionId,
+              orderId: subscriptionId,
             },
           },
         });
