@@ -3,7 +3,6 @@ import fetch from "node-fetch";
 import { clerkClient } from "@clerk/clerk-sdk-node";
 import { razorpay } from "../config/razorpay.js";
 import { sendOrderEmails } from "../utils/sendEmail.js";
-import { FREE_ORDER_LIMIT } from "../config/subscriptionBenefits.js";
 import { resolveSubscriptionForUser } from "../utils/subscriptionState.js";
 
 const router = express.Router();
@@ -14,12 +13,15 @@ function getActiveSubscriptionMetadata(user) {
   const expiresAt = subscription?.expiresAt
     ? new Date(subscription.expiresAt).getTime()
     : 0;
-  const freeOrderUsed = Number(subscription?.freeOrderUsed || 0);
+  const freeOrderUsedByIssue =
+    subscription?.freeOrderUsedByIssue && typeof subscription.freeOrderUsedByIssue === "object"
+      ? subscription.freeOrderUsedByIssue
+      : {};
 
   return {
     subscription,
     isActive: status === "active" && expiresAt > Date.now(),
-    freeOrderUsed,
+    freeOrderUsedByIssue,
   };
 }
 
@@ -69,8 +71,14 @@ router.post("/place-order", async (req, res) => {
     if (isFreeSubscriptionOrder) {
       const resolved = await resolveSubscriptionForUser(clerkId, { syncClerk: true });
       clerkUser = resolved.clerkUser;
-      const freeOrderUsed = Number(resolved?.subscription?.freeOrderUsed || 0);
       const isActive = isActiveSubscription(resolved?.subscription);
+      const printEntitled = Boolean(resolved?.subscription?.printEntitled);
+      const durationType = String(resolved?.subscription?.durationType || "").toLowerCase();
+      const freeOrderUsedByIssue =
+        resolved?.subscription?.freeOrderUsedByIssue &&
+        typeof resolved.subscription.freeOrderUsedByIssue === "object"
+          ? resolved.subscription.freeOrderUsedByIssue
+          : {};
 
       if (!isActive) {
         return res.status(403).json({
@@ -78,9 +86,9 @@ router.post("/place-order", async (req, res) => {
         });
       }
 
-      if (freeOrderUsed >= FREE_ORDER_LIMIT) {
+      if (!printEntitled) {
         return res.status(403).json({
-          error: "Free order limit reached. Please continue with paid checkout.",
+          error: "Your active plan does not include print entitlement.",
         });
       }
 
@@ -93,6 +101,18 @@ router.post("/place-order", async (req, res) => {
       if (!hasAllowedIssuesOnly) {
         return res.status(403).json({
           error: "Membership free order is only available for issues assigned to your plan slots.",
+        });
+      }
+
+      const alreadyUsedForAnyIssue = cartItems.some(
+        (item) => Number(freeOrderUsedByIssue?.[item?.id] || 0) >= 1
+      );
+      if (alreadyUsedForAnyIssue) {
+        return res.status(403).json({
+          error:
+            durationType === "single"
+              ? "Single latest issue print entitlement already used."
+              : "Free print order already used for one or more selected issues.",
         });
       }
     }
@@ -246,14 +266,19 @@ router.post("/place-order", async (req, res) => {
     });
 
     if (isFreeSubscriptionOrder && clerkUser) {
-      const { subscription, freeOrderUsed } = getActiveSubscriptionMetadata(clerkUser);
+      const { subscription, freeOrderUsedByIssue } = getActiveSubscriptionMetadata(clerkUser);
+      const nextUsage = { ...freeOrderUsedByIssue };
+      for (const item of cartItems) {
+        if (!item?.id) continue;
+        nextUsage[item.id] = Number(nextUsage[item.id] || 0) + 1;
+      }
+
       await clerkClient.users.updateUser(clerkId, {
         publicMetadata: {
           ...(clerkUser?.publicMetadata || {}),
           subscription: {
             ...subscription,
-            freeOrderLimit: FREE_ORDER_LIMIT,
-            freeOrderUsed: freeOrderUsed + 1,
+            freeOrderUsedByIssue: nextUsage,
           },
         },
       });

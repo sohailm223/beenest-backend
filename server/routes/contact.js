@@ -65,8 +65,8 @@ router.post("/", upload.single("attachment"), async (req, res) => {
 <div style="margin:0;padding:24px;background:#f3f4f6;font-family:Arial,sans-serif;color:#111827;">
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:680px;margin:0 auto;background:#ffffff;border:1px solid #e5e7eb;border-radius:14px;overflow:hidden;">
     <tr>
-      <td style="padding:18px 24px; text-align:center; background:#fff; border-bottom:1px solid #e5e7eb; ">
-        <img src="${logoUrl}" alt="Beenest" style="height:80px;max-width:220px;object-fit:contain;display:block;" />
+      <td style="padding:18px 24px; background:#fff; border-bottom:1px solid #e5e7eb;">
+        <img src="${logoUrl}" alt="Beenest" style="height:72px;max-width:220px;object-fit:contain;display:block;" />
       </td>
     </tr>
     <tr>

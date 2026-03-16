@@ -1,49 +1,105 @@
 import fetch from "node-fetch";
 
-export function normalizePlanKey(plan = "", options = {}) {
-  const value = String(plan || "").toLowerCase();
-  const period = String(options?.period || "").toLowerCase();
-  const interval = Number(options?.interval || 0);
-  const standardIds = [
-    process.env.RAZORPAY_TEST_PLAN_STANDARD,
-    process.env.RAZORPAY_LIVE_PLAN_STANDARD,
-  ]
-    .filter(Boolean)
-    .map((id) => String(id).toLowerCase());
-  const premiumIds = [
-    process.env.RAZORPAY_TEST_PLAN_PREMIUM,
-    process.env.RAZORPAY_LIVE_PLAN_PREMIUM,
-  ]
-    .filter(Boolean)
-    .map((id) => String(id).toLowerCase());
-
-  if (premiumIds.includes(value)) return "premium";
-  if (standardIds.includes(value)) return "standard";
-  if (value.includes("premium")) return "premium";
-  if (value.includes("standard")) return "standard";
-  if (value.includes("yearly")) return "premium";
-  if ((value.includes("12") && value.includes("month")) || value.includes("12month")) return "premium";
-  if (value.includes("quarter")) return "standard";
-  if ((value.includes("3") && value.includes("month")) || value.includes("3month")) return "standard";
-
-  if (period === "yearly") return "premium";
-  if (period === "monthly" && interval >= 12) return "premium";
-  if (period === "monthly" && interval > 0 && interval <= 3) return "standard";
-  if (interval >= 12) return "premium";
-  if (interval > 0 && interval <= 3) return "standard";
-
-  return "unknown";
-}
-
-function getSlotCount(plan = "", options = {}) {
-  const key = normalizePlanKey(plan, options);
-  if (key === "premium") return 2;
-  if (key === "standard") return 1;
-  return 0;
-}
+export const MEMBERSHIP_PLAN_CATALOG = {
+  print_single: {
+    key: "print_single",
+    planType: "print",
+    durationType: "single",
+    label: "Print - Single Latest Issue",
+    amount: 950,
+    slotCount: 1,
+    validityDays: 365,
+    printEntitled: true,
+    digitalEntitled: false,
+    canShare: false,
+  },
+  digital_single: {
+    key: "digital_single",
+    planType: "digital",
+    durationType: "single",
+    label: "Digital - Single Latest Issue",
+    amount: 750,
+    slotCount: 1,
+    validityDays: 365,
+    printEntitled: false,
+    digitalEntitled: true,
+    canShare: false,
+  },
+  bundle_single: {
+    key: "bundle_single",
+    planType: "bundle",
+    durationType: "single",
+    label: "Print + Digital - Single Latest Issue",
+    amount: 1700,
+    slotCount: 1,
+    validityDays: 365,
+    printEntitled: true,
+    digitalEntitled: true,
+    canShare: false,
+  },
+  print_biannual: {
+    key: "print_biannual",
+    planType: "print",
+    durationType: "biannual",
+    label: "Print - Bi-Annual (1 Year)",
+    amount: 1800,
+    slotCount: 2,
+    validityDays: 365,
+    printEntitled: true,
+    digitalEntitled: false,
+    canShare: false,
+  },
+  digital_biannual: {
+    key: "digital_biannual",
+    planType: "digital",
+    durationType: "biannual",
+    label: "Digital - Bi-Annual (1 Year)",
+    amount: 1400,
+    slotCount: 2,
+    validityDays: 365,
+    printEntitled: false,
+    digitalEntitled: true,
+    canShare: true,
+  },
+  bundle_biannual: {
+    key: "bundle_biannual",
+    planType: "bundle",
+    durationType: "biannual",
+    label: "Print + Digital - Bi-Annual (1 Year)",
+    amount: 3100,
+    slotCount: 2,
+    validityDays: 365,
+    printEntitled: true,
+    digitalEntitled: true,
+    canShare: true,
+  },
+};
 
 function toIdSet(list = []) {
   return Array.from(new Set((Array.isArray(list) ? list : []).filter(Boolean)));
+}
+
+export function normalizePlanKey(planKey = "") {
+  const key = String(planKey || "").trim().toLowerCase().replace(/[\s-]+/g, "_");
+  if (MEMBERSHIP_PLAN_CATALOG[key]) return key;
+
+  if (key.includes("print") && key.includes("digital") && key.includes("bi")) return "bundle_biannual";
+  if (key.includes("print") && key.includes("digital")) return "bundle_single";
+  if (key.includes("digital") && key.includes("bi")) return "digital_biannual";
+  if (key.includes("print") && key.includes("bi")) return "print_biannual";
+  if (key.includes("digital")) return "digital_single";
+  if (key.includes("print")) return "print_single";
+
+  return "digital_single";
+}
+
+export function getPlanConfig(planKey = "") {
+  const normalized = normalizePlanKey(planKey);
+  return MEMBERSHIP_PLAN_CATALOG[normalized] || MEMBERSHIP_PLAN_CATALOG.digital_single;
+}
+
+export function canShareForPlan(planKey = "") {
+  return Boolean(getPlanConfig(planKey)?.canShare);
 }
 
 export function buildSubscriptionAccessCode(subscriptionId) {
@@ -53,9 +109,9 @@ export function buildSubscriptionAccessCode(subscriptionId) {
 
 export function parseSubscriptionAccessCode(accessCode) {
   if (!accessCode || typeof accessCode !== "string") return null;
-  const normalized = accessCode.trim();
+  const normalized = accessCode.trim().replace(/\s+/g, "");
   if (!/^BN-/i.test(normalized)) return null;
-  const raw = normalized.slice(3);
+  const raw = normalized.slice(3).replace(/\s+/g, "");
   try {
     const decoded = Buffer.from(raw, "base64url").toString("utf8");
     return decoded || null;
@@ -97,29 +153,53 @@ export async function fetchLatestIssueIds(limit = 2) {
   return toIdSet((payload?.data?.magazines || []).map((item) => item?.id));
 }
 
-export async function computeIssueEntitlements(plan = "", options = {}) {
-  const slotCount = getSlotCount(plan, options);
-  const planKey = normalizePlanKey(plan, options);
-  if (!slotCount) {
+export async function computeIssueEntitlements(planKey = "", existingIssueIds = []) {
+  const plan = getPlanConfig(planKey);
+  const selected = toIdSet(existingIssueIds);
+
+  // Single plans always pin to latest issue only.
+  if (plan.durationType === "single") {
+    const latest = await fetchLatestIssueIds(1);
     return {
-      slotCount: 0,
-      issueIds: [],
-      planKey,
+      slotCount: 1,
+      issueIds: latest.slice(0, 1),
+      planKey: plan.key,
+      planType: plan.planType,
+      durationType: plan.durationType,
+      printEntitled: plan.printEntitled,
+      digitalEntitled: plan.digitalEntitled,
+      canShare: plan.canShare,
+      amount: plan.amount,
+      validityDays: plan.validityDays,
     };
   }
 
-  const issueIds = await fetchLatestIssueIds(slotCount);
+  // Bi-annual:
+  // - Keep first assigned issue
+  // - Fill second slot only when a new latest issue appears.
+  const latest = await fetchLatestIssueIds(1);
+  let issueIds = selected;
+  if (!issueIds.length && latest.length) {
+    issueIds = [latest[0]];
+  } else if (issueIds.length < plan.slotCount && latest.length && !issueIds.includes(latest[0])) {
+    issueIds = [...issueIds, latest[0]];
+  }
+
   return {
-    slotCount,
-    issueIds,
-    planKey,
+    slotCount: plan.slotCount,
+    issueIds: issueIds.slice(0, plan.slotCount),
+    planKey: plan.key,
+    planType: plan.planType,
+    durationType: plan.durationType,
+    printEntitled: plan.printEntitled,
+    digitalEntitled: plan.digitalEntitled,
+    canShare: plan.canShare,
+    amount: plan.amount,
+    validityDays: plan.validityDays,
   };
 }
 
-export async function syncMembershipSelectedIssues({
-  membershipId,
-  issueIds = [],
-}) {
+export async function syncMembershipSelectedIssues({ membershipId, issueIds = [] }) {
   if (!membershipId || !process.env.HYGRAPH_API || !process.env.HYGRAPH_TOKEN) return;
 
   const safeIds = toIdSet(issueIds);

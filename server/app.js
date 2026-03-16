@@ -23,6 +23,9 @@ import configRoutes from "./routes/config.js";
 import getSubscriptionRoutes from "./routes/get-subscription.js";
 import razorpayRoutes from "./routes/razorpay.js";
 import subscriptionStatusRoutes from "./routes/subscription-status.js";
+import paidArticleAccessRoutes from "./routes/paid-article-access.js";
+import adminAnalyticsRoutes from "./routes/admin-analytics.js";
+import sharePreviewRoutes from "./routes/share-preview.js";
 
 const app = express();
 
@@ -60,6 +63,9 @@ app.use("/api", configRoutes);
 app.use("/api", getSubscriptionRoutes);
 app.use("/api", razorpayRoutes);
 app.use("/api", subscriptionStatusRoutes);
+app.use("/api", paidArticleAccessRoutes);
+app.use("/api", adminAnalyticsRoutes);
+app.use("/share", sharePreviewRoutes);
 
 app.get("/", (req, res) => {
   res.send("Beenest Magazine Group Backend API is running");

@@ -1,7 +1,6 @@
 import express from 'express';
 import fetch from 'node-fetch';
 import { clerkClient } from "@clerk/clerk-sdk-node";
-import { FREE_DIGITAL_LIMIT } from "../config/subscriptionBenefits.js";
 import { resolveSubscriptionForUser } from "../utils/subscriptionState.js";
 
 const router = express.Router();
@@ -10,12 +9,10 @@ function getSubscriptionMetadata(user) {
   const subscription = user?.publicMetadata?.subscription || {};
   const status = String(subscription?.status || "").toLowerCase();
   const expiresAt = subscription?.expiresAt ? new Date(subscription.expiresAt).getTime() : 0;
-  const freeDigitalUsed = Number(subscription?.freeDigitalUsed || 0);
 
   return {
     subscription,
     isActive: status === "active" && expiresAt > Date.now(),
-    freeDigitalUsed,
   };
 }
 
@@ -93,7 +90,7 @@ router.post('/download-digital-asset', async (req, res) => {
       Array.isArray(assetPayload?.data?.memberships) && assetPayload.data.memberships.length > 0;
     let clerkUser = null;
     let hasResolvedMembership = false;
-    let clerkFreeDigitalUsed = 0;
+    let digitalEntitled = false;
     let allowedIssueIds = [];
 
     if (requireActiveMembership && clerkId) {
@@ -105,7 +102,7 @@ router.post('/download-digital-asset', async (req, res) => {
           ? new Date(resolved.subscription.expiresAt).getTime()
           : 0;
         hasResolvedMembership = status === "active" && expiresAt > Date.now();
-        clerkFreeDigitalUsed = Number(resolved?.subscription?.freeDigitalUsed || 0);
+        digitalEntitled = Boolean(resolved?.subscription?.digitalEntitled);
         allowedIssueIds = resolved?.entitlements?.issueIds || [];
       } catch (clerkError) {
         console.warn("Unable to verify Clerk membership metadata:", clerkError?.message);
@@ -124,13 +121,9 @@ router.post('/download-digital-asset', async (req, res) => {
       });
     }
 
-    if (
-      requireActiveMembership &&
-      !alreadyPurchased &&
-      clerkFreeDigitalUsed >= FREE_DIGITAL_LIMIT
-    ) {
+    if (requireActiveMembership && !alreadyPurchased && !digitalEntitled) {
       return res.status(403).json({
-        error: "Free digital download limit reached. Please purchase this issue.",
+        error: "Your active plan does not include digital entitlement.",
       });
     }
 
@@ -172,20 +165,6 @@ router.post('/download-digital-asset', async (req, res) => {
     const updateResult = await updateRes.json();
     if (updateResult.errors) {
       return res.status(500).json({ error: 'Failed to update download record', details: updateResult.errors });
-    }
-
-    if (requireActiveMembership && !alreadyPurchased && clerkUser) {
-      const subscriptionMeta = getSubscriptionMetadata(clerkUser);
-      await clerkClient.users.updateUser(clerkId, {
-        publicMetadata: {
-          ...(clerkUser?.publicMetadata || {}),
-          subscription: {
-            ...subscriptionMeta.subscription,
-            freeDigitalLimit: FREE_DIGITAL_LIMIT,
-            freeDigitalUsed: subscriptionMeta.freeDigitalUsed + 1,
-          },
-        },
-      });
     }
 
     // Step 4: Return download URL

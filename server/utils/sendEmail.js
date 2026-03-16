@@ -29,6 +29,30 @@ const formatAddress = (shippingInfo = {}) =>
     .filter(Boolean)
     .join(", ");
 
+const EMAIL_LOGO_URL = (
+  process.env.EMAIL_LOGO_URL ||
+  process.env.CONTACT_LOGO_URL ||
+  "https://www.beenest.in/static/media/beenest_icon.761d0b8794d27179a786.webp"
+).trim();
+
+const renderEmailShell = ({ title, contentHtml }) => `
+  <div style="margin:0;padding:24px;background:#f5f7fb;font-family:Arial,sans-serif;color:#111827;">
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:760px;margin:0 auto;background:#ffffff;border:1px solid #e5e7eb;border-radius:12px;overflow:hidden;">
+      <tr>
+        <td style="padding:18px 24px;border-bottom:1px solid #e5e7eb;background:#fff;">
+          <img src="${escapeHtml(EMAIL_LOGO_URL)}" alt="Beenest" style="height:72px;max-width:220px;object-fit:contain;display:block;" />
+        </td>
+      </tr>
+      <tr>
+        <td style="padding:24px;">
+          <h2 style="margin:0 0 14px;font-size:30px;color:#111827;">${escapeHtml(title || "Beenest Magazine")}</h2>
+          ${contentHtml || ""}
+        </td>
+      </tr>
+    </table>
+  </div>
+`;
+
 const buildProductRowsForUser = (items = []) =>
   items
     .map((item) => {
@@ -89,85 +113,62 @@ export const sendOrderEmails = async ({
     const productRowsUser = buildProductRowsForUser(cartItems);
     const productRowsAdmin = buildProductRowsForAdmin(cartItems);
 
-    const customerHtml = `
-      <div style="margin:0;padding:24px;background:#f5f7fb;font-family:Arial,sans-serif;color:#111827;">
-        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:720px;margin:0 auto;background:#ffffff;border:1px solid #e5e7eb;border-radius:12px;overflow:hidden;">
-          <tr>
-            <td style="padding:18px 24px;border-bottom:1px solid #e5e7eb;">
-              <h2 style="margin:0;font-size:24px;color:#111827;">Beenest Magazine</h2>
-            </td>
-          </tr>
-          <tr>
-            <td style="padding:24px;">
-              <h3 style="margin:0 0 8px;font-size:22px;">Order Confirmed</h3>
-              <p style="margin:0 0 16px;color:#4b5563;">Hi ${safeName}, thank you for your order. We have received it successfully.</p>
-              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border:1px solid #e5e7eb;border-radius:8px;margin-bottom:20px;">
-                <tr><td style="padding:10px 12px;color:#374151;border-bottom:1px solid #e5e7eb;">Order ID</td><td style="padding:10px 12px;text-align:right;border-bottom:1px solid #e5e7eb;font-weight:600;">#${safeOrderId}</td></tr>
-                <tr><td style="padding:10px 12px;color:#374151;border-bottom:1px solid #e5e7eb;">Order Date</td><td style="padding:10px 12px;text-align:right;border-bottom:1px solid #e5e7eb;">${safeDate}</td></tr>
-                <tr><td style="padding:10px 12px;color:#374151;border-bottom:1px solid #e5e7eb;">Payment Method</td><td style="padding:10px 12px;text-align:right;border-bottom:1px solid #e5e7eb;">${safePaymentMethod}</td></tr>
-                <tr><td style="padding:10px 12px;color:#374151;">Payable Total</td><td style="padding:10px 12px;text-align:right;font-weight:700;">${formatCurrency(totalAmount)}</td></tr>
-              </table>
-
-              <h4 style="margin:0 0 8px;font-size:18px;">Ordered Items</h4>
-              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border:1px solid #e5e7eb;border-radius:8px;overflow:hidden;">
-                <thead>
-                  <tr>
-                    <th style="text-align:left;padding:12px;background:#f9fafb;border-bottom:1px solid #e5e7eb;color:#374151;font-size:13px;">Image</th>
-                    <th style="text-align:left;padding:12px;background:#f9fafb;border-bottom:1px solid #e5e7eb;color:#374151;font-size:13px;">Product</th>
-                    <th style="text-align:right;padding:12px;background:#f9fafb;border-bottom:1px solid #e5e7eb;color:#374151;font-size:13px;">Price</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  ${productRowsUser || `<tr><td colspan="3" style="padding:12px;color:#6b7280;">No products available.</td></tr>`}
-                </tbody>
-              </table>
-              <p style="margin:18px 0 0;color:#6b7280;font-size:13px;">For support, reply to this email.</p>
-            </td>
-          </tr>
+    const customerHtml = renderEmailShell({
+      title: "Order Confirmed",
+      contentHtml: `
+        <p style="margin:0 0 16px;color:#4b5563;">Hi ${safeName}, thank you for your order. We have received it successfully.</p>
+        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border:1px solid #e5e7eb;border-radius:8px;margin-bottom:20px;">
+          <tr><td style="padding:10px 12px;color:#374151;border-bottom:1px solid #e5e7eb;">Order ID</td><td style="padding:10px 12px;text-align:right;border-bottom:1px solid #e5e7eb;font-weight:600;">#${safeOrderId}</td></tr>
+          <tr><td style="padding:10px 12px;color:#374151;border-bottom:1px solid #e5e7eb;">Order Date</td><td style="padding:10px 12px;text-align:right;border-bottom:1px solid #e5e7eb;">${safeDate}</td></tr>
+          <tr><td style="padding:10px 12px;color:#374151;border-bottom:1px solid #e5e7eb;">Payment Method</td><td style="padding:10px 12px;text-align:right;border-bottom:1px solid #e5e7eb;">${safePaymentMethod}</td></tr>
+          <tr><td style="padding:10px 12px;color:#374151;">Payable Total</td><td style="padding:10px 12px;text-align:right;font-weight:700;">${formatCurrency(totalAmount)}</td></tr>
         </table>
-      </div>
-    `;
-
-    const adminHtml = `
-      <div style="margin:0;padding:24px;background:#f5f7fb;font-family:Arial,sans-serif;color:#111827;">
-        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:780px;margin:0 auto;background:#ffffff;border:1px solid #e5e7eb;border-radius:12px;overflow:hidden;">
-          <tr>
-            <td style="padding:18px 24px;border-bottom:1px solid #e5e7eb;">
-              <h2 style="margin:0;font-size:24px;color:#111827;">New Order - Beenest Magazine</h2>
-            </td>
-          </tr>
-          <tr>
-            <td style="padding:24px;">
-              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border:1px solid #e5e7eb;border-radius:8px;margin-bottom:20px;">
-                <tr><td style="padding:10px 12px;border-bottom:1px solid #e5e7eb;">Order ID</td><td style="padding:10px 12px;text-align:right;border-bottom:1px solid #e5e7eb;">#${safeOrderId}</td></tr>
-                <tr><td style="padding:10px 12px;border-bottom:1px solid #e5e7eb;">Date</td><td style="padding:10px 12px;text-align:right;border-bottom:1px solid #e5e7eb;">${safeDate}</td></tr>
-                <tr><td style="padding:10px 12px;border-bottom:1px solid #e5e7eb;">Customer Name</td><td style="padding:10px 12px;text-align:right;border-bottom:1px solid #e5e7eb;">${safeName}</td></tr>
-                <tr><td style="padding:10px 12px;border-bottom:1px solid #e5e7eb;">Customer Email</td><td style="padding:10px 12px;text-align:right;border-bottom:1px solid #e5e7eb;">${safeEmail}</td></tr>
-                <tr><td style="padding:10px 12px;border-bottom:1px solid #e5e7eb;">Phone</td><td style="padding:10px 12px;text-align:right;border-bottom:1px solid #e5e7eb;">${safePhone || "-"}</td></tr>
-                <tr><td style="padding:10px 12px;border-bottom:1px solid #e5e7eb;">Address</td><td style="padding:10px 12px;text-align:right;border-bottom:1px solid #e5e7eb;">${safeAddress || "-"}</td></tr>
-                <tr><td style="padding:10px 12px;border-bottom:1px solid #e5e7eb;">Payment Method</td><td style="padding:10px 12px;text-align:right;border-bottom:1px solid #e5e7eb;">${safePaymentMethod}</td></tr>
-                <tr><td style="padding:10px 12px;">Payable Total</td><td style="padding:10px 12px;text-align:right;font-weight:700;">${formatCurrency(totalAmount)}</td></tr>
-              </table>
-
-              <h4 style="margin:0 0 8px;font-size:18px;">Products</h4>
-              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;width:100%;">
-                <thead>
-                  <tr style="background:#f9fafb;">
-                    <th style="padding:10px;border:1px solid #e5e7eb;text-align:left;">#</th>
-                    <th style="padding:10px;border:1px solid #e5e7eb;text-align:left;">Product</th>
-                    <th style="padding:10px;border:1px solid #e5e7eb;text-align:left;">Price</th>
-                    <th style="padding:10px;border:1px solid #e5e7eb;text-align:left;">Image</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  ${productRowsAdmin || `<tr><td colspan="4" style="padding:10px;border:1px solid #e5e7eb;color:#6b7280;">No products available.</td></tr>`}
-                </tbody>
-              </table>
-            </td>
-          </tr>
+        <h4 style="margin:0 0 8px;font-size:18px;">Ordered Items</h4>
+        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border:1px solid #e5e7eb;border-radius:8px;overflow:hidden;">
+          <thead>
+            <tr>
+              <th style="text-align:left;padding:12px;background:#f9fafb;border-bottom:1px solid #e5e7eb;color:#374151;font-size:13px;">Image</th>
+              <th style="text-align:left;padding:12px;background:#f9fafb;border-bottom:1px solid #e5e7eb;color:#374151;font-size:13px;">Product</th>
+              <th style="text-align:right;padding:12px;background:#f9fafb;border-bottom:1px solid #e5e7eb;color:#374151;font-size:13px;">Price</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${productRowsUser || `<tr><td colspan="3" style="padding:12px;color:#6b7280;">No products available.</td></tr>`}
+          </tbody>
         </table>
-      </div>
-    `;
+        <p style="margin:18px 0 0;color:#6b7280;font-size:13px;">For support, reply to this email.</p>
+      `,
+    });
+
+    const adminHtml = renderEmailShell({
+      title: "New Order Received",
+      contentHtml: `
+        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border:1px solid #e5e7eb;border-radius:8px;margin-bottom:20px;">
+          <tr><td style="padding:10px 12px;border-bottom:1px solid #e5e7eb;">Order ID</td><td style="padding:10px 12px;text-align:right;border-bottom:1px solid #e5e7eb;">#${safeOrderId}</td></tr>
+          <tr><td style="padding:10px 12px;border-bottom:1px solid #e5e7eb;">Date</td><td style="padding:10px 12px;text-align:right;border-bottom:1px solid #e5e7eb;">${safeDate}</td></tr>
+          <tr><td style="padding:10px 12px;border-bottom:1px solid #e5e7eb;">Customer Name</td><td style="padding:10px 12px;text-align:right;border-bottom:1px solid #e5e7eb;">${safeName}</td></tr>
+          <tr><td style="padding:10px 12px;border-bottom:1px solid #e5e7eb;">Customer Email</td><td style="padding:10px 12px;text-align:right;border-bottom:1px solid #e5e7eb;">${safeEmail}</td></tr>
+          <tr><td style="padding:10px 12px;border-bottom:1px solid #e5e7eb;">Phone</td><td style="padding:10px 12px;text-align:right;border-bottom:1px solid #e5e7eb;">${safePhone || "-"}</td></tr>
+          <tr><td style="padding:10px 12px;border-bottom:1px solid #e5e7eb;">Address</td><td style="padding:10px 12px;text-align:right;border-bottom:1px solid #e5e7eb;">${safeAddress || "-"}</td></tr>
+          <tr><td style="padding:10px 12px;border-bottom:1px solid #e5e7eb;">Payment Method</td><td style="padding:10px 12px;text-align:right;border-bottom:1px solid #e5e7eb;">${safePaymentMethod}</td></tr>
+          <tr><td style="padding:10px 12px;">Payable Total</td><td style="padding:10px 12px;text-align:right;font-weight:700;">${formatCurrency(totalAmount)}</td></tr>
+        </table>
+        <h4 style="margin:0 0 8px;font-size:18px;">Products</h4>
+        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;width:100%;">
+          <thead>
+            <tr style="background:#f9fafb;">
+              <th style="padding:10px;border:1px solid #e5e7eb;text-align:left;">#</th>
+              <th style="padding:10px;border:1px solid #e5e7eb;text-align:left;">Product</th>
+              <th style="padding:10px;border:1px solid #e5e7eb;text-align:left;">Price</th>
+              <th style="padding:10px;border:1px solid #e5e7eb;text-align:left;">Image</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${productRowsAdmin || `<tr><td colspan="4" style="padding:10px;border:1px solid #e5e7eb;color:#6b7280;">No products available.</td></tr>`}
+          </tbody>
+        </table>
+      `,
+    });
 
     await transporter.sendMail({
       from: `"Beenest Magazine" <${process.env.EMAIL_USER}>`,
@@ -195,51 +196,30 @@ export const sendNewsletterEmails = async ({ email, source = "website" }) => {
     const safeSource = escapeHtml(source);
     const safeDate = escapeHtml(new Date().toLocaleString("en-IN", { hour12: true }));
 
-    const customerHtml = `
-      <div style="margin:0;padding:24px;background:#f5f7fb;font-family:Arial,sans-serif;color:#111827;">
-        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:680px;margin:0 auto;background:#ffffff;border:1px solid #e5e7eb;border-radius:12px;overflow:hidden;">
-          <tr>
-            <td style="padding:18px 24px;border-bottom:1px solid #e5e7eb;">
-              <h2 style="margin:0;font-size:24px;color:#111827;">Beenest Magazine</h2>
-            </td>
-          </tr>
-          <tr>
-            <td style="padding:24px;">
-              <h3 style="margin:0 0 10px;font-size:22px;">Newsletter Subscription Confirmed</h3>
-              <p style="margin:0 0 12px;color:#4b5563;">
-                Thank you for subscribing to the Beenest Magazine newsletter.
-              </p>
-              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border:1px solid #e5e7eb;border-radius:8px;">
-                <tr><td style="padding:10px 12px;color:#374151;border-bottom:1px solid #e5e7eb;">Email</td><td style="padding:10px 12px;text-align:right;border-bottom:1px solid #e5e7eb;">${safeEmail}</td></tr>
-                <tr><td style="padding:10px 12px;color:#374151;">Subscribed On</td><td style="padding:10px 12px;text-align:right;">${safeDate}</td></tr>
-              </table>
-              <p style="margin:16px 0 0;color:#6b7280;font-size:13px;">You will now receive updates, stories, and issue releases from Beenest.</p>
-            </td>
-          </tr>
+    const customerHtml = renderEmailShell({
+      title: "Newsletter Subscription Confirmed",
+      contentHtml: `
+        <p style="margin:0 0 12px;color:#4b5563;">
+          Thank you for subscribing to the Beenest Magazine newsletter.
+        </p>
+        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border:1px solid #e5e7eb;border-radius:8px;">
+          <tr><td style="padding:10px 12px;color:#374151;border-bottom:1px solid #e5e7eb;">Email</td><td style="padding:10px 12px;text-align:right;border-bottom:1px solid #e5e7eb;">${safeEmail}</td></tr>
+          <tr><td style="padding:10px 12px;color:#374151;">Subscribed On</td><td style="padding:10px 12px;text-align:right;">${safeDate}</td></tr>
         </table>
-      </div>
-    `;
+        <p style="margin:16px 0 0;color:#6b7280;font-size:13px;">You will now receive updates, stories, and issue releases from Beenest.</p>
+      `,
+    });
 
-    const adminHtml = `
-      <div style="margin:0;padding:24px;background:#f5f7fb;font-family:Arial,sans-serif;color:#111827;">
-        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:680px;margin:0 auto;background:#ffffff;border:1px solid #e5e7eb;border-radius:12px;overflow:hidden;">
-          <tr>
-            <td style="padding:18px 24px;border-bottom:1px solid #e5e7eb;">
-              <h2 style="margin:0;font-size:24px;color:#111827;">New Newsletter Signup</h2>
-            </td>
-          </tr>
-          <tr>
-            <td style="padding:24px;">
-              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border:1px solid #e5e7eb;border-radius:8px;">
-                <tr><td style="padding:10px 12px;color:#374151;border-bottom:1px solid #e5e7eb;">Email</td><td style="padding:10px 12px;text-align:right;border-bottom:1px solid #e5e7eb;">${safeEmail}</td></tr>
-                <tr><td style="padding:10px 12px;color:#374151;border-bottom:1px solid #e5e7eb;">Source</td><td style="padding:10px 12px;text-align:right;border-bottom:1px solid #e5e7eb;">${safeSource}</td></tr>
-                <tr><td style="padding:10px 12px;color:#374151;">Date</td><td style="padding:10px 12px;text-align:right;">${safeDate}</td></tr>
-              </table>
-            </td>
-          </tr>
+    const adminHtml = renderEmailShell({
+      title: "New Newsletter Signup",
+      contentHtml: `
+        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border:1px solid #e5e7eb;border-radius:8px;">
+          <tr><td style="padding:10px 12px;color:#374151;border-bottom:1px solid #e5e7eb;">Email</td><td style="padding:10px 12px;text-align:right;border-bottom:1px solid #e5e7eb;">${safeEmail}</td></tr>
+          <tr><td style="padding:10px 12px;color:#374151;border-bottom:1px solid #e5e7eb;">Source</td><td style="padding:10px 12px;text-align:right;border-bottom:1px solid #e5e7eb;">${safeSource}</td></tr>
+          <tr><td style="padding:10px 12px;color:#374151;">Date</td><td style="padding:10px 12px;text-align:right;">${safeDate}</td></tr>
         </table>
-      </div>
-    `;
+      `,
+    });
 
     await Promise.all([
       transporter.sendMail({
@@ -300,29 +280,23 @@ export const sendSubscriptionEmails = async ({
       </table>
     `;
 
-    const customerHtml = `
-      <div style="margin:0;padding:24px;background:#f5f7fb;font-family:Arial,sans-serif;color:#111827;">
-        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:680px;margin:0 auto;background:#ffffff;border:1px solid #e5e7eb;border-radius:12px;overflow:hidden;">
-          <tr><td style="padding:18px 24px;border-bottom:1px solid #e5e7eb;"><h2 style="margin:0;font-size:24px;">Beenest Magazine</h2></td></tr>
-          <tr><td style="padding:24px;"><h3 style="margin:0 0 10px;font-size:22px;">Subscription Activated</h3><p style="margin:0 0 14px;color:#4b5563;">Hi ${safeName}, your membership is now active.</p>${detailsTable}</td></tr>
-        </table>
-      </div>
-    `;
+    const customerHtml = renderEmailShell({
+      title: "Subscription Activated",
+      contentHtml: `<p style="margin:0 0 14px;color:#4b5563;">Hi ${safeName}, your membership is now active.</p>${detailsTable}`,
+    });
 
-    const adminHtml = `
-      <div style="margin:0;padding:24px;background:#f5f7fb;font-family:Arial,sans-serif;color:#111827;">
-        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:760px;margin:0 auto;background:#ffffff;border:1px solid #e5e7eb;border-radius:12px;overflow:hidden;">
-          <tr><td style="padding:18px 24px;border-bottom:1px solid #e5e7eb;"><h2 style="margin:0;font-size:24px;">New Subscription Purchase</h2></td></tr>
-          <tr><td style="padding:24px;"><p style="margin:0 0 14px;color:#4b5563;">A user has purchased a subscription.</p>${detailsTable}
-          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin-top:14px;border:1px solid #e5e7eb;border-radius:8px;">
-            <tr><td style="padding:10px 12px;border-bottom:1px solid #e5e7eb;">Customer Name</td><td style="padding:10px 12px;text-align:right;border-bottom:1px solid #e5e7eb;">${safeName}</td></tr>
-            <tr><td style="padding:10px 12px;border-bottom:1px solid #e5e7eb;">Customer Email</td><td style="padding:10px 12px;text-align:right;border-bottom:1px solid #e5e7eb;">${safeEmail || "-"}</td></tr>
-            <tr><td style="padding:10px 12px;">Clerk ID</td><td style="padding:10px 12px;text-align:right;">${safeClerkId || "-"}</td></tr>
-          </table>
-          </td></tr>
+    const adminHtml = renderEmailShell({
+      title: "New Subscription Purchase",
+      contentHtml: `
+        <p style="margin:0 0 14px;color:#4b5563;">A user has purchased a subscription.</p>
+        ${detailsTable}
+        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin-top:14px;border:1px solid #e5e7eb;border-radius:8px;">
+          <tr><td style="padding:10px 12px;border-bottom:1px solid #e5e7eb;">Customer Name</td><td style="padding:10px 12px;text-align:right;border-bottom:1px solid #e5e7eb;">${safeName}</td></tr>
+          <tr><td style="padding:10px 12px;border-bottom:1px solid #e5e7eb;">Customer Email</td><td style="padding:10px 12px;text-align:right;border-bottom:1px solid #e5e7eb;">${safeEmail || "-"}</td></tr>
+          <tr><td style="padding:10px 12px;">Clerk ID</td><td style="padding:10px 12px;text-align:right;">${safeClerkId || "-"}</td></tr>
         </table>
-      </div>
-    `;
+      `,
+    });
 
     const jobs = [];
     if (userEmail) {
@@ -380,29 +354,23 @@ export const sendSubscriptionCancelledEmails = async ({
       </table>
     `;
 
-    const customerHtml = `
-      <div style="margin:0;padding:24px;background:#f5f7fb;font-family:Arial,sans-serif;color:#111827;">
-        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:680px;margin:0 auto;background:#ffffff;border:1px solid #e5e7eb;border-radius:12px;overflow:hidden;">
-          <tr><td style="padding:18px 24px;border-bottom:1px solid #e5e7eb;"><h2 style="margin:0;font-size:24px;">Beenest Magazine</h2></td></tr>
-          <tr><td style="padding:24px;"><h3 style="margin:0 0 10px;font-size:22px;">Subscription Cancelled</h3><p style="margin:0 0 14px;color:#4b5563;">Hi ${safeName}, your subscription has been cancelled successfully.</p>${detailsTable}</td></tr>
-        </table>
-      </div>
-    `;
+    const customerHtml = renderEmailShell({
+      title: "Subscription Cancelled",
+      contentHtml: `<p style="margin:0 0 14px;color:#4b5563;">Hi ${safeName}, your subscription has been cancelled successfully.</p>${detailsTable}`,
+    });
 
-    const adminHtml = `
-      <div style="margin:0;padding:24px;background:#f5f7fb;font-family:Arial,sans-serif;color:#111827;">
-        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:760px;margin:0 auto;background:#ffffff;border:1px solid #e5e7eb;border-radius:12px;overflow:hidden;">
-          <tr><td style="padding:18px 24px;border-bottom:1px solid #e5e7eb;"><h2 style="margin:0;font-size:24px;">Subscription Cancelled</h2></td></tr>
-          <tr><td style="padding:24px;"><p style="margin:0 0 14px;color:#4b5563;">A user cancelled their subscription.</p>${detailsTable}
-          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin-top:14px;border:1px solid #e5e7eb;border-radius:8px;">
-            <tr><td style="padding:10px 12px;border-bottom:1px solid #e5e7eb;">Customer Name</td><td style="padding:10px 12px;text-align:right;border-bottom:1px solid #e5e7eb;">${safeName}</td></tr>
-            <tr><td style="padding:10px 12px;border-bottom:1px solid #e5e7eb;">Customer Email</td><td style="padding:10px 12px;text-align:right;border-bottom:1px solid #e5e7eb;">${safeEmail || "-"}</td></tr>
-            <tr><td style="padding:10px 12px;">Clerk ID</td><td style="padding:10px 12px;text-align:right;">${safeClerkId || "-"}</td></tr>
-          </table>
-          </td></tr>
+    const adminHtml = renderEmailShell({
+      title: "Subscription Cancelled",
+      contentHtml: `
+        <p style="margin:0 0 14px;color:#4b5563;">A user cancelled their subscription.</p>
+        ${detailsTable}
+        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin-top:14px;border:1px solid #e5e7eb;border-radius:8px;">
+          <tr><td style="padding:10px 12px;border-bottom:1px solid #e5e7eb;">Customer Name</td><td style="padding:10px 12px;text-align:right;border-bottom:1px solid #e5e7eb;">${safeName}</td></tr>
+          <tr><td style="padding:10px 12px;border-bottom:1px solid #e5e7eb;">Customer Email</td><td style="padding:10px 12px;text-align:right;border-bottom:1px solid #e5e7eb;">${safeEmail || "-"}</td></tr>
+          <tr><td style="padding:10px 12px;">Clerk ID</td><td style="padding:10px 12px;text-align:right;">${safeClerkId || "-"}</td></tr>
         </table>
-      </div>
-    `;
+      `,
+    });
 
     const jobs = [];
     if (userEmail) {
