@@ -262,8 +262,10 @@ function getAdminAllowlist() {
 }
 
 function getAdminEmailAllowlist() {
-  const raw = String(process.env.ADMIN_ANALYTICS_EMAILS || "beenestmag@gmail.com").trim();
-  if (!raw) return ["beenestmag@gmail.com"];
+  const raw = String(
+    process.env.ADMIN_ANALYTICS_EMAILS || "sohailm223@gmail.com,beenestmag@gmail.com"
+  ).trim();
+  if (!raw) return ["sohailm223@gmail.com", "beenestmag@gmail.com"];
   return raw
     .split(",")
     .map((item) => item.trim().toLowerCase())
@@ -453,6 +455,30 @@ router.post("/admin/manual-subscriber", async (req, res) => {
     return res.status(500).json({
       success: false,
       error: error?.message || "Unable to add subscriber manually",
+    });
+  }
+});
+
+router.post("/admin/can-access", async (req, res) => {
+  try {
+    const { clerkId } = req.body || {};
+    if (!clerkId) {
+      return res.status(400).json({ success: false, error: "clerkId is required" });
+    }
+
+    const canAccess = await canAccessAnalytics(clerkId);
+    return res.json({
+      success: true,
+      canAccess,
+      envEmailKey: "ADMIN_ANALYTICS_EMAILS",
+      envClerkIdKey: "ADMIN_ANALYTICS_CLERK_IDS",
+    });
+  } catch (error) {
+    console.error("admin can-access error:", error?.message || error);
+    return res.status(500).json({
+      success: false,
+      error: "Unable to validate admin access",
+      canAccess: false,
     });
   }
 });
@@ -713,7 +739,7 @@ router.post("/admin/assigned-issues", async (req, res) => {
     );
 
     const memberships = Array.isArray(data?.memberships) ? data.memberships : [];
-    const rows = memberships.map((membership) => {
+    const rawRows = memberships.map((membership) => {
       const customer = Array.isArray(membership?.customer) ? membership.customer[0] : membership?.customer || {};
       const issues = Array.isArray(membership?.selectedIssues) ? membership.selectedIssues : [];
 
@@ -735,6 +761,20 @@ router.post("/admin/assigned-issues", async (req, res) => {
       };
     });
 
+    const rows = rawRows.filter((row) => {
+      return Boolean(
+        row.customerClerkId ||
+          row.customerEmail ||
+          row.customerName ||
+          row.planId ||
+          row.planStatus ||
+          row.startDate ||
+          row.endDate ||
+          Number(row.issueCount || 0) > 0
+      );
+    });
+    const omittedIncompleteMemberships = Math.max(0, rawRows.length - rows.length);
+
     const customers = new Set(
       rows
         .map((row) => row.customerClerkId || row.customerEmail || "")
@@ -742,6 +782,16 @@ router.post("/admin/assigned-issues", async (req, res) => {
     );
 
     const totalAssignedIssues = rows.reduce((sum, row) => sum + Number(row.issueCount || 0), 0);
+    const activeMemberships = rows.filter(
+      (row) => String(row.planStatus || "").toLowerCase() === "active"
+    ).length;
+    const cancelledMemberships = rows.filter((row) => {
+      const status = String(row.planStatus || "").toLowerCase();
+      return status === "cancelled" || status === "canceled";
+    }).length;
+    const expiredMemberships = rows.filter(
+      (row) => String(row.planStatus || "").toLowerCase() === "expired"
+    ).length;
 
     return res.json({
       success: true,
@@ -749,6 +799,10 @@ router.post("/admin/assigned-issues", async (req, res) => {
         totalCustomers: customers.size,
         totalMemberships: rows.length,
         totalAssignedIssues,
+        activeMemberships,
+        cancelledMemberships,
+        expiredMemberships,
+        omittedIncompleteMemberships,
       },
       rows,
     });

@@ -3,6 +3,7 @@ import crypto from "crypto";
 import fetch from "node-fetch";
 import { clerkClient } from "@clerk/clerk-sdk-node";
 import { razorpay, razorpayKeyId } from "../config/razorpay.js";
+import { sendPaidArticlePurchaseEmails } from "../utils/sendEmail.js";
 
 const router = express.Router();
 
@@ -15,6 +16,9 @@ async function getPaidArticle({ articleId, slug }) {
         name
         price
         magazineType
+        featuredImage {
+          url
+        }
       }
       byIdDraft: magazine(where: { id: $id }, stage: DRAFT) {
         id
@@ -22,6 +26,9 @@ async function getPaidArticle({ articleId, slug }) {
         name
         price
         magazineType
+        featuredImage {
+          url
+        }
       }
       bySlugPublished: magazine(where: { slug: $slug }) {
         id
@@ -29,6 +36,9 @@ async function getPaidArticle({ articleId, slug }) {
         name
         price
         magazineType
+        featuredImage {
+          url
+        }
       }
       bySlugDraft: magazine(where: { slug: $slug }, stage: DRAFT) {
         id
@@ -36,6 +46,9 @@ async function getPaidArticle({ articleId, slug }) {
         name
         price
         magazineType
+        featuredImage {
+          url
+        }
       }
     }
   `;
@@ -223,6 +236,30 @@ router.post("/verify-paid-article-payment", async (req, res) => {
         paidArticleAccess: nextAccess,
       },
     });
+
+    try {
+      const article = await getPaidArticle({ articleId });
+      const userEmail =
+        user?.emailAddresses?.find((email) => email.id === user.primaryEmailAddressId)?.emailAddress ||
+        user?.emailAddresses?.[0]?.emailAddress ||
+        "";
+      const userName =
+        user?.fullName ||
+        [user?.firstName, user?.lastName].filter(Boolean).join(" ") ||
+        user?.username ||
+        "Reader";
+
+      await sendPaidArticlePurchaseEmails({
+        userEmail,
+        userName,
+        clerkId,
+        orderId: razorpay_order_id,
+        paymentId: razorpay_payment_id,
+        article: article || { id: articleId, name: "Paid Article", price: 0 },
+      });
+    } catch (emailError) {
+      console.error("Paid article email send failed:", emailError?.message || emailError);
+    }
 
     return res.json({
       success: true,
