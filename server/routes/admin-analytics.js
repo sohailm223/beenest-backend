@@ -1,6 +1,12 @@
 import express from "express";
 import fetch from "node-fetch";
 import { clerkClient } from "@clerk/clerk-sdk-node";
+import {
+  MEMBERSHIP_PLAN_CATALOG,
+  computeIssueEntitlements,
+  getPlanConfig,
+  normalizePlanKey,
+} from "../utils/subscriptionEntitlements.js";
 
 const router = express.Router();
 
@@ -36,6 +42,214 @@ function startOfMonth(date = new Date()) {
 function isSameOrAfter(input, threshold) {
   if (!input || !threshold) return false;
   return input.getTime() >= threshold.getTime();
+}
+
+function dateOnly(value) {
+  if (!value) return null;
+  return String(value).split("T")[0];
+}
+
+function parseDateOnlyInput(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return null;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(raw)) return null;
+  const parsed = new Date(`${raw}T00:00:00.000Z`);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return parsed;
+}
+
+function addDaysIso(dateIso, days = 365) {
+  const d = new Date(dateIso);
+  d.setUTCDate(d.getUTCDate() + Number(days || 365));
+  return d.toISOString();
+}
+
+function getPrimaryEmailAddress(user) {
+  return (
+    user?.emailAddresses?.find((item) => item.id === user.primaryEmailAddressId)?.emailAddress ||
+    user?.emailAddresses?.[0]?.emailAddress ||
+    ""
+  );
+}
+
+function getDisplayNameFromEmail(email = "") {
+  const localPart = String(email || "").split("@")[0] || "Member";
+  const tokens = localPart
+    .replace(/[._-]+/g, " ")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+  if (!tokens.length) return "Member";
+  return tokens.map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join(" ");
+}
+
+async function findUserByEmail(email) {
+  const normalized = String(email || "").trim().toLowerCase();
+  if (!normalized) return null;
+
+  try {
+    const result = await clerkClient.users.getUserList({
+      emailAddress: [normalized],
+      limit: 1,
+    });
+    const direct = Array.isArray(result?.data) ? result.data[0] : null;
+    if (direct) return direct;
+  } catch {
+    // Fallback below.
+  }
+
+  let offset = 0;
+  while (true) {
+    const result = await clerkClient.users.getUserList({ limit: 100, offset });
+    const users = Array.isArray(result?.data) ? result.data : [];
+    const match = users.find((candidate) => {
+      const emails = (candidate?.emailAddresses || [])
+        .map((entry) => String(entry?.emailAddress || "").trim().toLowerCase())
+        .filter(Boolean);
+      return emails.includes(normalized);
+    });
+    if (match) return match;
+
+    offset += users.length;
+    const totalCount = Number(result?.totalCount || 0);
+    if (!users.length || (totalCount > 0 && offset >= totalCount)) break;
+  }
+
+  return null;
+}
+
+async function ensureHygraphCustomer({ clerkId, email, name }) {
+  const existing = await hygraphRequest(
+    `
+      query ExistingCustomer($clerkId: String!) {
+        customer(where: { clerkId: $clerkId }) {
+          id
+          clerkId
+          email
+          name
+        }
+      }
+    `,
+    { clerkId }
+  );
+
+  if (existing?.customer?.id) {
+    return existing.customer;
+  }
+
+  const created = await hygraphRequest(
+    `
+      mutation CreateCustomer($clerkId: String!, $email: String!, $name: String!) {
+        createCustomer(
+          data: {
+            clerkId: $clerkId
+            email: $email
+            name: $name
+          }
+        ) {
+          id
+          clerkId
+          email
+          name
+        }
+      }
+    `,
+    {
+      clerkId,
+      email,
+      name,
+    }
+  );
+
+  const customer = created?.createCustomer;
+  if (!customer?.id) {
+    throw new Error("Unable to create customer in Hygraph");
+  }
+
+  await hygraphRequest(
+    `
+      mutation PublishCustomer($id: ID!) {
+        publishCustomer(where: { id: $id }) {
+          id
+        }
+      }
+    `,
+    { id: customer.id }
+  );
+
+  return customer;
+}
+
+async function createHygraphMembership({
+  clerkId,
+  planKey,
+  amount,
+  paymentId,
+  subscriptionId,
+  startedAt,
+  expiresAt,
+  issueIds = [],
+}) {
+  const created = await hygraphRequest(
+    `
+      mutation CreateMembership(
+        $clerkId: String!
+        $paymentId: String!
+        $subscriptionId: String!
+        $planId: String!
+        $amount: Int!
+        $planStatus: UserPlanStatus!
+        $startDate: Date!
+        $endDate: DateTime
+        $selectedIssues: [MagazineWhereUniqueInput!]
+      ) {
+        createMembership(
+          data: {
+            razorpayPaymentId: $paymentId
+            razorpaySubscriptionId: $subscriptionId
+            planId: $planId
+            amount: $amount
+            planStatus: $planStatus
+            startDate: $startDate
+            endDate: $endDate
+            selectedIssues: { connect: $selectedIssues }
+            customer: { connect: { clerkId: $clerkId } }
+          }
+        ) {
+          id
+        }
+      }
+    `,
+    {
+      clerkId,
+      paymentId,
+      subscriptionId,
+      planId: planKey,
+      amount: Number(amount || 0),
+      planStatus: "active",
+      startDate: dateOnly(startedAt),
+      endDate: expiresAt,
+      selectedIssues: issueIds.map((id) => ({ id })),
+    }
+  );
+
+  const membershipId = created?.createMembership?.id;
+  if (!membershipId) {
+    throw new Error("Unable to create membership in Hygraph");
+  }
+
+  await hygraphRequest(
+    `
+      mutation PublishMembership($id: ID!) {
+        publishMembership(where: { id: $id }) {
+          id
+        }
+      }
+    `,
+    { id: membershipId }
+  );
+
+  return membershipId;
 }
 
 function getAdminAllowlist() {
@@ -93,6 +307,155 @@ async function hygraphRequest(query, variables = {}) {
   }
   return payload?.data || {};
 }
+
+router.post("/admin/manual-subscriber", async (req, res) => {
+  try {
+    const { adminClerkId, email, password, planKey, startDate } = req.body || {};
+
+    if (!adminClerkId) {
+      return res.status(400).json({ success: false, error: "adminClerkId is required" });
+    }
+    if (!email || !planKey) {
+      return res.status(400).json({ success: false, error: "email and planKey are required" });
+    }
+    if (!(await canAccessAnalytics(adminClerkId))) {
+      return res.status(403).json({ success: false, error: "You do not have access to this action" });
+    }
+
+    const normalizedEmail = String(email || "").trim().toLowerCase();
+    const requestedPlanKey = String(planKey || "").trim().toLowerCase().replace(/[\s-]+/g, "_");
+    if (!MEMBERSHIP_PLAN_CATALOG[requestedPlanKey]) {
+      return res.status(400).json({ success: false, error: "Invalid planKey" });
+    }
+
+    const normalizedPlanKey = normalizePlanKey(requestedPlanKey);
+    const plan = getPlanConfig(normalizedPlanKey);
+    const parsedStartDate = parseDateOnlyInput(startDate) || new Date();
+    const startedAt = new Date(
+      Date.UTC(
+        parsedStartDate.getUTCFullYear(),
+        parsedStartDate.getUTCMonth(),
+        parsedStartDate.getUTCDate(),
+        0,
+        0,
+        0,
+        0
+      )
+    ).toISOString();
+    const expiresAt = addDaysIso(startedAt, Number(plan.validityDays || 365));
+
+    let user = await findUserByEmail(normalizedEmail);
+    const userWasCreated = !user;
+    if (!user) {
+      if (!password || String(password).length < 8) {
+        return res.status(400).json({
+          success: false,
+          error: "Password with minimum 8 characters is required for new user",
+        });
+      }
+
+      const displayName = getDisplayNameFromEmail(normalizedEmail);
+      user = await clerkClient.users.createUser({
+        emailAddress: [normalizedEmail],
+        password: String(password),
+        firstName: displayName.split(" ")[0] || "Member",
+      });
+    }
+
+    const clerkId = user?.id;
+    if (!clerkId) {
+      return res.status(500).json({ success: false, error: "Unable to resolve subscriber user" });
+    }
+
+    const entitlements = await computeIssueEntitlements(plan.key, []);
+    const nowStamp = Date.now();
+    const suffix = Math.random().toString(36).slice(2, 8);
+    const paymentId = `manual_pay_${nowStamp}_${suffix}`;
+    const subscriptionId = `manual_sub_${nowStamp}_${suffix}`;
+
+    const customerName =
+      user?.fullName ||
+      [user?.firstName, user?.lastName].filter(Boolean).join(" ") ||
+      getDisplayNameFromEmail(normalizedEmail);
+
+    await ensureHygraphCustomer({
+      clerkId,
+      email: getPrimaryEmailAddress(user) || normalizedEmail,
+      name: customerName,
+    });
+
+    const membershipId = await createHygraphMembership({
+      clerkId,
+      planKey: plan.key,
+      amount: Number(plan.amount || 0),
+      paymentId,
+      subscriptionId,
+      startedAt,
+      expiresAt,
+      issueIds: entitlements.issueIds,
+    });
+
+    const existingPublicMetadata = user?.publicMetadata || {};
+    const subscriptionMetadata = {
+      status: "active",
+      plan: plan.label,
+      planKey: plan.key,
+      planType: plan.planType,
+      durationType: plan.durationType,
+      startedAt,
+      expiresAt,
+      accessType: "owner",
+      paymentProvider: "manual",
+      paymentId,
+      orderId: subscriptionId,
+      subscriptionId,
+      issueSlotCount: entitlements.slotCount,
+      selectedIssueIds: entitlements.issueIds,
+      printEntitled: plan.printEntitled,
+      digitalEntitled: plan.digitalEntitled,
+      canShare: plan.canShare,
+      sharedReaderLimit: 100,
+      sharedReaderUsed: 0,
+      sharedReaders: [],
+      freeOrderUsedByIssue: {},
+    };
+
+    await clerkClient.users.updateUser(clerkId, {
+      publicMetadata: {
+        ...existingPublicMetadata,
+        subscription: subscriptionMetadata,
+      },
+    });
+
+    return res.json({
+      success: true,
+      message: "Subscriber added successfully",
+      data: {
+        membershipId,
+        user: {
+          clerkId,
+          email: getPrimaryEmailAddress(user) || normalizedEmail,
+          name: customerName,
+          created: userWasCreated,
+        },
+        subscription: {
+          planKey: plan.key,
+          planLabel: plan.label,
+          startDate: dateOnly(startedAt),
+          endDate: dateOnly(expiresAt),
+          amount: Number(plan.amount || 0),
+          status: "active",
+        },
+      },
+    });
+  } catch (error) {
+    console.error("manual subscriber creation error:", error?.message || error);
+    return res.status(500).json({
+      success: false,
+      error: error?.message || "Unable to add subscriber manually",
+    });
+  }
+});
 
 router.post("/admin/analytics", async (req, res) => {
   try {
