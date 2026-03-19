@@ -23,7 +23,7 @@ export const MEMBERSHIP_PLAN_CATALOG = {
     validityDays: 365,
     printEntitled: false,
     digitalEntitled: true,
-    canShare: false,
+    canShare: true,
   },
   bundle_single: {
     key: "bundle_single",
@@ -35,7 +35,7 @@ export const MEMBERSHIP_PLAN_CATALOG = {
     validityDays: 365,
     printEntitled: true,
     digitalEntitled: true,
-    canShare: false,
+    canShare: true,
   },
   print_biannual: {
     key: "print_biannual",
@@ -102,22 +102,52 @@ export function canShareForPlan(planKey = "") {
   return Boolean(getPlanConfig(planKey)?.canShare);
 }
 
-export function buildSubscriptionAccessCode(subscriptionId) {
+export function buildSubscriptionAccessCode(subscriptionId, ownerClerkId = "") {
   if (!subscriptionId) return null;
-  return `BN-${Buffer.from(String(subscriptionId), "utf8").toString("base64url")}`;
+  const safeSubscriptionId = String(subscriptionId).trim();
+  if (!safeSubscriptionId) return null;
+
+  const safeOwnerClerkId = String(ownerClerkId || "").trim();
+  const payload = safeOwnerClerkId
+    ? `v2|${safeSubscriptionId}|${safeOwnerClerkId}`
+    : safeSubscriptionId;
+  return `BN-${Buffer.from(payload, "utf8").toString("base64url")}`;
 }
 
-export function parseSubscriptionAccessCode(accessCode) {
+export function parseSubscriptionAccessCodePayload(accessCode) {
   if (!accessCode || typeof accessCode !== "string") return null;
   const normalized = accessCode.trim().replace(/\s+/g, "");
   if (!/^BN-/i.test(normalized)) return null;
+
   const raw = normalized.slice(3).replace(/\s+/g, "");
   try {
     const decoded = Buffer.from(raw, "base64url").toString("utf8");
-    return decoded || null;
+    if (!decoded) return null;
+
+    if (decoded.startsWith("v2|")) {
+      const [, subscriptionId = "", ownerClerkId = ""] = decoded.split("|");
+      const safeSubscriptionId = String(subscriptionId || "").trim();
+      const safeOwnerClerkId = String(ownerClerkId || "").trim();
+      if (!safeSubscriptionId) return null;
+      return {
+        subscriptionId: safeSubscriptionId,
+        ownerClerkId: safeOwnerClerkId || null,
+        version: "v2",
+      };
+    }
+
+    return {
+      subscriptionId: String(decoded).trim() || null,
+      ownerClerkId: null,
+      version: "v1",
+    };
   } catch {
     return null;
   }
+}
+
+export function parseSubscriptionAccessCode(accessCode) {
+  return parseSubscriptionAccessCodePayload(accessCode)?.subscriptionId || null;
 }
 
 export async function fetchLatestIssueIds(limit = 2) {

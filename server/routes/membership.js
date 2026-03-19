@@ -319,6 +319,9 @@ router.post("/verify-order", async (req, res) => {
       printEntitled: plan.printEntitled,
       digitalEntitled: plan.digitalEntitled,
       canShare: plan.canShare,
+      sharedReaderLimit: 100,
+      sharedReaderUsed: 0,
+      sharedReaders: [],
       freeOrderUsedByIssue: {},
     };
 

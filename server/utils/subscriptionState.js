@@ -8,6 +8,22 @@ import {
   syncMembershipSelectedIssues,
 } from "./subscriptionEntitlements.js";
 
+function normalizeSharedReaders(list = []) {
+  const map = new Map();
+  for (const entry of Array.isArray(list) ? list : []) {
+    const clerkId = String(entry?.clerkId || "").trim();
+    if (!clerkId) continue;
+    const redeemedAt = entry?.redeemedAt ? safeDate(entry.redeemedAt) : null;
+    map.set(clerkId, {
+      clerkId,
+      name: String(entry?.name || "").trim(),
+      email: String(entry?.email || "").trim(),
+      redeemedAt,
+    });
+  }
+  return Array.from(map.values());
+}
+
 function safeDate(value) {
   if (!value) return null;
   const time = new Date(value).getTime();
@@ -33,6 +49,8 @@ function normalizeStatus(status, expiresAt) {
 
 function normalizeFromClerk(subscription = {}) {
   const planKey = normalizePlanKey(subscription?.planKey || subscription?.plan || "");
+  const sharedReaders = normalizeSharedReaders(subscription?.sharedReaders);
+  const sharedReaderLimit = Math.max(1, Number(subscription?.sharedReaderLimit || 100));
   return {
     status: normalizeStatus(subscription?.status, subscription?.expiresAt),
     plan: subscription?.plan || planKey,
@@ -53,6 +71,9 @@ function normalizeFromClerk(subscription = {}) {
     printEntitled: Boolean(subscription?.printEntitled),
     digitalEntitled: Boolean(subscription?.digitalEntitled),
     canShare: Boolean(subscription?.canShare),
+    sharedReaderLimit,
+    sharedReaderUsed: Number(subscription?.sharedReaderUsed || sharedReaders.length || 0),
+    sharedReaders,
     freeOrderUsedByIssue:
       subscription?.freeOrderUsedByIssue && typeof subscription.freeOrderUsedByIssue === "object"
         ? subscription.freeOrderUsedByIssue
@@ -159,6 +180,9 @@ export async function resolveSubscriptionForUser(clerkId, { syncClerk = true } =
     issueIds: Array.isArray(subscription?.selectedIssueIds) ? subscription.selectedIssueIds : [],
     accessCode: null,
     canShare: false,
+    sharedReaderLimit: Number(subscription?.sharedReaderLimit || 0),
+    sharedReaderUsed: Number(subscription?.sharedReaderUsed || 0),
+    sharedReaders: Array.isArray(subscription?.sharedReaders) ? subscription.sharedReaders : [],
   };
 
   if (String(subscription?.status || "") === "active") {
@@ -172,6 +196,9 @@ export async function resolveSubscriptionForUser(clerkId, { syncClerk = true } =
         issueIds: computed.issueIds,
         accessCode: null,
         canShare: computed.canShare,
+        sharedReaderLimit: Number(subscription?.sharedReaderLimit || 0),
+        sharedReaderUsed: Number(subscription?.sharedReaderUsed || 0),
+        sharedReaders: Array.isArray(subscription?.sharedReaders) ? subscription.sharedReaders : [],
       };
       subscription = {
         ...subscription,
@@ -202,11 +229,17 @@ export async function resolveSubscriptionForUser(clerkId, { syncClerk = true } =
     entitlements = {
       ...entitlements,
       canShare: subscription.canShare,
+      sharedReaderLimit: Number(subscription?.sharedReaderLimit || 0),
+      sharedReaderUsed: Number(subscription?.sharedReaderUsed || 0),
+      sharedReaders: Array.isArray(subscription?.sharedReaders) ? subscription.sharedReaders : [],
     };
   }
 
   const accessCode = subscription?.canShare
-    ? buildSubscriptionAccessCode(subscription?.subscriptionId || subscription?.orderId)
+    ? buildSubscriptionAccessCode(
+        subscription?.subscriptionId || subscription?.orderId,
+        subscription?.accessType === "owner" ? clerkId : subscription?.sharedByClerkId || ""
+      )
     : null;
   entitlements.accessCode = accessCode;
 

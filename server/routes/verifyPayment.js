@@ -407,6 +407,9 @@ router.post("/", async (req, res) => {
       freeDigitalLimit: FREE_DIGITAL_LIMIT,
       freeOrderUsed: 0,
       freeDigitalUsed: 0,
+      sharedReaderLimit: 100,
+      sharedReaderUsed: 0,
+      sharedReaders: [],
     };
 
     await updateClerkMetadata({

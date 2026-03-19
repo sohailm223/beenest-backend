@@ -68,7 +68,7 @@ app.use("/api", adminAnalyticsRoutes);
 app.use("/share", sharePreviewRoutes);
 
 app.get("/", (req, res) => {
-  res.send("Beenest Magazine Group Backend API is running");
+  res.send("Beenest Magazine Group Backend API is running - Beenest.in");
 });
 
 export default app;

@@ -1,5 +1,6 @@
 import express from "express";
 import fetch from "node-fetch";
+import { clerkClient } from "@clerk/clerk-sdk-node";
 
 const router = express.Router();
 
@@ -46,13 +47,34 @@ function getAdminAllowlist() {
     .filter(Boolean);
 }
 
-function canAccessAnalytics(clerkId) {
+function getAdminEmailAllowlist() {
+  const raw = String(process.env.ADMIN_ANALYTICS_EMAILS || "beenestmag@gmail.com").trim();
+  if (!raw) return ["beenestmag@gmail.com"];
+  return raw
+    .split(",")
+    .map((item) => item.trim().toLowerCase())
+    .filter(Boolean);
+}
+
+async function canAccessAnalytics(clerkId) {
   if (!clerkId) return false;
-  const allowlist = getAdminAllowlist();
-  if (!allowlist.length) {
-    return process.env.NODE_ENV !== "production";
+
+  const clerkIdAllowlist = getAdminAllowlist();
+  if (clerkIdAllowlist.includes(clerkId)) {
+    return true;
   }
-  return allowlist.includes(clerkId);
+
+  try {
+    const user = await clerkClient.users.getUser(clerkId);
+    const adminEmails = getAdminEmailAllowlist();
+    const userEmails = (user?.emailAddresses || [])
+      .map((item) => String(item?.emailAddress || "").trim().toLowerCase())
+      .filter(Boolean);
+
+    return userEmails.some((email) => adminEmails.includes(email));
+  } catch {
+    return false;
+  }
 }
 
 async function hygraphRequest(query, variables = {}) {
@@ -78,7 +100,7 @@ router.post("/admin/analytics", async (req, res) => {
     if (!clerkId) {
       return res.status(400).json({ success: false, error: "clerkId is required" });
     }
-    if (!canAccessAnalytics(clerkId)) {
+    if (!(await canAccessAnalytics(clerkId))) {
       return res.status(403).json({ success: false, error: "You do not have access to analytics" });
     }
 
@@ -280,6 +302,7 @@ router.post("/admin/analytics", async (req, res) => {
       accessControl: {
         usesAllowlist: getAdminAllowlist().length > 0,
         envKey: "ADMIN_ANALYTICS_CLERK_IDS",
+        envEmailKey: "ADMIN_ANALYTICS_EMAILS",
       },
     });
   } catch (error) {
@@ -287,6 +310,90 @@ router.post("/admin/analytics", async (req, res) => {
     return res.status(500).json({
       success: false,
       error: "Unable to load analytics",
+    });
+  }
+});
+
+router.post("/admin/assigned-issues", async (req, res) => {
+  try {
+    const { clerkId } = req.body || {};
+    if (!clerkId) {
+      return res.status(400).json({ success: false, error: "clerkId is required" });
+    }
+    if (!(await canAccessAnalytics(clerkId))) {
+      return res.status(403).json({ success: false, error: "You do not have access to assigned issues" });
+    }
+
+    const data = await hygraphRequest(
+      `
+        query AdminAssignedIssues($limit: Int!) {
+          memberships(first: $limit, orderBy: startDate_DESC) {
+            id
+            planId
+            planStatus
+            startDate
+            endDate
+            customer {
+              clerkId
+              name
+              email
+            }
+            selectedIssues {
+              id
+              name
+              slug
+            }
+          }
+        }
+      `,
+      { limit: 500 }
+    );
+
+    const memberships = Array.isArray(data?.memberships) ? data.memberships : [];
+    const rows = memberships.map((membership) => {
+      const customer = Array.isArray(membership?.customer) ? membership.customer[0] : membership?.customer || {};
+      const issues = Array.isArray(membership?.selectedIssues) ? membership.selectedIssues : [];
+
+      return {
+        membershipId: membership?.id,
+        customerClerkId: customer?.clerkId || "",
+        customerName: customer?.name || "",
+        customerEmail: customer?.email || "",
+        planId: membership?.planId || "",
+        planStatus: membership?.planStatus || "",
+        startDate: membership?.startDate || null,
+        endDate: membership?.endDate || null,
+        issueCount: issues.length,
+        issues: issues.map((issue) => ({
+          id: issue?.id,
+          name: issue?.name || "Issue",
+          slug: issue?.slug || "",
+        })),
+      };
+    });
+
+    const customers = new Set(
+      rows
+        .map((row) => row.customerClerkId || row.customerEmail || "")
+        .filter(Boolean)
+    );
+
+    const totalAssignedIssues = rows.reduce((sum, row) => sum + Number(row.issueCount || 0), 0);
+
+    return res.json({
+      success: true,
+      summary: {
+        totalCustomers: customers.size,
+        totalMemberships: rows.length,
+        totalAssignedIssues,
+      },
+      rows,
+    });
+  } catch (error) {
+    console.error("admin assigned issues error:", error?.message || error);
+    return res.status(500).json({
+      success: false,
+      error: "Unable to load assigned issues",
     });
   }
 });

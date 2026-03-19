@@ -95,6 +95,20 @@ router.post("/create-paid-article-order", async (req, res) => {
       });
     }
 
+    const user = await clerkClient.users.getUser(clerkId);
+    const publicMetadata = user?.publicMetadata || {};
+    const existingAccess = Array.isArray(publicMetadata?.paidArticleAccess)
+      ? publicMetadata.paidArticleAccess
+      : [];
+    if (existingAccess.includes(article.id)) {
+      return res.json({
+        success: true,
+        alreadyPurchased: true,
+        articleId: article.id,
+        articleTitle: article.name,
+      });
+    }
+
     const amount = Number(article.price || 0);
     if (!Number.isFinite(amount) || amount <= 0) {
       return res.status(400).json({

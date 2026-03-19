@@ -7,8 +7,9 @@ import fetch from "node-fetch";
 import { sendSubscriptionCancelledEmails } from "../utils/sendEmail.js";
 import {
   canShareForPlan,
+  getPlanConfig,
   normalizePlanKey,
-  parseSubscriptionAccessCode,
+  parseSubscriptionAccessCodePayload,
 } from "../utils/subscriptionEntitlements.js";
 
 import dotenv from "dotenv";
@@ -16,6 +17,95 @@ import dotenv from "dotenv";
 dotenv.config();
 
 const router = express.Router();
+const SHARED_READER_LIMIT = 100;
+const CLERK_PAGE_SIZE = 100;
+
+function getPrimaryEmailAddress(user) {
+  return (
+    user?.emailAddresses?.find((email) => email.id === user.primaryEmailAddressId)?.emailAddress ||
+    user?.emailAddresses?.[0]?.emailAddress ||
+    ""
+  );
+}
+
+function getDisplayName(user) {
+  return (
+    user?.fullName ||
+    [user?.firstName, user?.lastName].filter(Boolean).join(" ") ||
+    user?.username ||
+    getPrimaryEmailAddress(user) ||
+    "Reader"
+  );
+}
+
+function toIsoOrNow(value) {
+  const time = value ? new Date(value).getTime() : NaN;
+  if (Number.isNaN(time)) return new Date().toISOString();
+  return new Date(time).toISOString();
+}
+
+function normalizeSharedReaders(list = []) {
+  const map = new Map();
+  for (const entry of Array.isArray(list) ? list : []) {
+    const clerkId = String(entry?.clerkId || "").trim();
+    if (!clerkId) continue;
+    map.set(clerkId, {
+      clerkId,
+      name: String(entry?.name || "").trim(),
+      email: String(entry?.email || "").trim(),
+      redeemedAt: toIsoOrNow(entry?.redeemedAt),
+    });
+  }
+  return Array.from(map.values());
+}
+
+async function findOwnerUserBySubscriptionId(subscriptionId, ownerClerkIdHint = "") {
+  const target = String(subscriptionId || "").trim();
+  if (!target) return null;
+
+  const hintedOwnerId = String(ownerClerkIdHint || "").trim();
+  if (hintedOwnerId) {
+    try {
+      const hintedUser = await clerkClient.users.getUser(hintedOwnerId);
+      const hintedSubscription = hintedUser?.publicMetadata?.subscription || {};
+      const accessType = String(hintedSubscription?.accessType || "owner").toLowerCase();
+      const ownerSubscriptionId = String(
+        hintedSubscription?.subscriptionId || hintedSubscription?.orderId || ""
+      ).trim();
+      if (accessType === "owner" && ownerSubscriptionId === target) {
+        return hintedUser;
+      }
+    } catch {
+      // Fall back to legacy scan below.
+    }
+  }
+
+  let offset = 0;
+  while (true) {
+    const response = await clerkClient.users.getUserList({
+      limit: CLERK_PAGE_SIZE,
+      offset,
+    });
+
+    const users = Array.isArray(response?.data) ? response.data : [];
+    const ownerUser = users.find((candidate) => {
+      const subscription = candidate?.publicMetadata?.subscription || {};
+      const accessType = String(subscription?.accessType || "owner").toLowerCase();
+      const ownerSubscriptionId = String(
+        subscription?.subscriptionId || subscription?.orderId || ""
+      ).trim();
+      return accessType === "owner" && ownerSubscriptionId && ownerSubscriptionId === target;
+    });
+
+    if (ownerUser) return ownerUser;
+
+    offset += users.length;
+    const totalCount = Number(response?.totalCount || 0);
+    if (!users.length || (totalCount > 0 && offset >= totalCount)) break;
+  }
+
+  return null;
+}
 
 async function markHygraphMembershipCancelled(subscriptionId, cancelledAt) {
   if (!process.env.HYGRAPH_API || !process.env.HYGRAPH_TOKEN) return;
@@ -183,7 +273,8 @@ router.post("/redeem-access-code", async (req, res) => {
       });
     }
 
-    const subscriptionId = parseSubscriptionAccessCode(accessCode);
+    const accessPayload = parseSubscriptionAccessCodePayload(accessCode);
+    const subscriptionId = accessPayload?.subscriptionId || null;
     if (!subscriptionId) {
       return res.status(400).json({ success: false, error: "Invalid access code" });
     }
@@ -235,7 +326,7 @@ router.post("/redeem-access-code", async (req, res) => {
     if (!canShareForPlan(planKey)) {
       return res.status(403).json({
         success: false,
-        error: "Access code sharing is available only for bi-annual digital or bundle plans",
+        error: "Access code sharing is available only for digital or bundle plans",
       });
     }
 
@@ -246,6 +337,34 @@ router.post("/redeem-access-code", async (req, res) => {
       return res.status(403).json({
         success: false,
         error: "This access code is no longer active",
+      });
+    }
+
+    const ownerUser = await findOwnerUserBySubscriptionId(
+      subscriptionId,
+      accessPayload?.ownerClerkId || ""
+    );
+    if (!ownerUser?.id) {
+      return res.status(404).json({
+        success: false,
+        error: "Subscription owner not found for this access code",
+      });
+    }
+
+    const ownerMetadata = ownerUser?.publicMetadata || {};
+    const ownerSubscription = ownerMetadata?.subscription || {};
+    const sharedReaderLimit = Math.max(
+      1,
+      Number(ownerSubscription?.sharedReaderLimit || SHARED_READER_LIMIT)
+    );
+    const sharedReaders = normalizeSharedReaders(ownerSubscription?.sharedReaders);
+    const isOwnerRedeeming = String(ownerUser.id) === String(clerkId);
+    const alreadyRedeemed = sharedReaders.some((item) => item.clerkId === clerkId);
+
+    if (!isOwnerRedeeming && !alreadyRedeemed && sharedReaders.length >= sharedReaderLimit) {
+      return res.status(403).json({
+        success: false,
+        error: `Reader seat limit reached (${sharedReaderLimit}) for this subscription`,
       });
     }
 
@@ -288,6 +407,7 @@ router.post("/redeem-access-code", async (req, res) => {
       const user = await clerkClient.users.getUser(clerkId);
       const existing = user?.publicMetadata || {};
       const existingSubscription = existing?.subscription || {};
+      const plan = getPlanConfig(planKey);
 
       const isOwnerActive =
         String(existingSubscription?.status || "").toLowerCase() === "active" &&
@@ -305,14 +425,14 @@ router.post("/redeem-access-code", async (req, res) => {
               status: "active",
               planKey,
               plan: membership?.planId || existingSubscription?.plan || "Shared Access",
-              planType: "digital",
-              durationType: "biannual",
+              planType: plan?.planType || "digital",
+              durationType: plan?.durationType || "single",
               startedAt: existingSubscription?.startedAt || new Date().toISOString(),
               expiresAt: membership?.endDate || existingSubscription?.expiresAt || null,
               printEntitled: false,
               digitalEntitled: true,
               canShare: false,
-              issueSlotCount: 2,
+              issueSlotCount: Number(plan?.slotCount || 1),
               selectedIssueIds: (membership?.selectedIssues || [])
                 .map((item) => item?.id)
                 .filter(Boolean),
@@ -320,6 +440,31 @@ router.post("/redeem-access-code", async (req, res) => {
               paymentProvider: "razorpay",
               subscriptionId,
               orderId: subscriptionId,
+              sharedByClerkId: ownerUser.id,
+            },
+          },
+        });
+      }
+
+      if (!isOwnerRedeeming) {
+        const readerSnapshot = {
+          clerkId,
+          name: getDisplayName(user),
+          email: getPrimaryEmailAddress(user),
+          redeemedAt: new Date().toISOString(),
+        };
+        const nextSharedReaders = alreadyRedeemed
+          ? sharedReaders.map((item) => (item.clerkId === clerkId ? readerSnapshot : item))
+          : [...sharedReaders, readerSnapshot];
+
+        await clerkClient.users.updateUser(ownerUser.id, {
+          publicMetadata: {
+            ...ownerMetadata,
+            subscription: {
+              ...ownerSubscription,
+              sharedReaderLimit,
+              sharedReaderUsed: nextSharedReaders.length,
+              sharedReaders: nextSharedReaders,
             },
           },
         });
