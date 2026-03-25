@@ -1,5 +1,6 @@
 import express from "express";
 import fetch from "node-fetch";
+import { sendDigitalPurchaseEmails } from "../utils/sendEmail.js";
 
 const router = express.Router();
 
@@ -61,7 +62,12 @@ router.post("/place-digital-order", async (req, res) => {
           magazine(where: { id: $magazineId }) {
             id
             name
+            slug
             price
+            magazineType
+            featuredImage {
+              url
+            }
           }
         }
       `,
@@ -152,6 +158,19 @@ router.post("/place-digital-order", async (req, res) => {
         orderId,
       }
     );
+
+    try {
+      await sendDigitalPurchaseEmails({
+        userEmail: customer.email || "",
+        userName: customer.name || "Reader",
+        clerkId,
+        orderId,
+        paymentId: payment?.razorpay_payment_id || "",
+        magazine,
+      });
+    } catch (emailError) {
+      console.error("Digital order email send failed:", emailError?.message || emailError);
+    }
 
     return res.json({ success: true, orderId });
   } catch (error) {

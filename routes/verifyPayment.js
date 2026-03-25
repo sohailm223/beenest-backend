@@ -46,6 +46,54 @@ function addPeriodToIso(isoDate, period = "monthly", interval = 1) {
   return date.toISOString();
 }
 
+async function fetchIssueItemsForEmail(issueIds = []) {
+  const ids = Array.from(new Set((Array.isArray(issueIds) ? issueIds : []).filter(Boolean)));
+  if (!ids.length || !process.env.HYGRAPH_API || !process.env.HYGRAPH_TOKEN) return [];
+
+  const response = await fetch(process.env.HYGRAPH_API, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${process.env.HYGRAPH_TOKEN}`,
+    },
+    body: JSON.stringify({
+      query: `
+        query IssueItemsForEmail($ids: [ID!]) {
+          magazines(where: { id_in: $ids }, first: 50) {
+            id
+            name
+            slug
+            price
+            magazineType
+            featuredImage {
+              url
+            }
+          }
+        }
+      `,
+      variables: { ids },
+    }),
+  });
+
+  const payload = await response.json();
+  if (!response.ok || payload?.errors?.length) {
+    throw new Error("Unable to fetch issue details for subscription email");
+  }
+
+  const byId = new Map((payload?.data?.magazines || []).map((item) => [item.id, item]));
+  return ids
+    .map((id) => byId.get(id))
+    .filter(Boolean)
+    .map((issue) => ({
+      name: issue.name,
+      slug: issue.slug,
+      price: Number(issue.price || 0),
+      featuredImage: issue.featuredImage || null,
+      type: "subscription_issue",
+      magazineType: issue.magazineType || "issue",
+    }));
+}
+
 async function updateClerkMetadata({ clerkId, metadata }) {
   // Uses CLERK_SECRET_KEY from environment.
   const user = await clerkClient.users.getUser(clerkId);
@@ -407,6 +455,9 @@ router.post("/", async (req, res) => {
       freeDigitalLimit: FREE_DIGITAL_LIMIT,
       freeOrderUsed: 0,
       freeDigitalUsed: 0,
+      sharedReaderLimit: 100,
+      sharedReaderUsed: 0,
+      sharedReaders: [],
     };
 
     await updateClerkMetadata({
@@ -416,11 +467,13 @@ router.post("/", async (req, res) => {
       },
     });
 
+    let selectedIssueIds = [];
     try {
       const entitlement = await computeIssueEntitlements(plan, {
         period: planInfo?.period,
         interval: planInfo?.interval,
       });
+      selectedIssueIds = Array.isArray(entitlement?.issueIds) ? entitlement.issueIds : [];
       await createHygraphMembership({
         clerkId,
         plan,
@@ -430,7 +483,7 @@ router.post("/", async (req, res) => {
         status,
         startedAt,
         expiresAt,
-        selectedIssueIds: entitlement.issueIds,
+        selectedIssueIds,
       });
     } catch (hygraphError) {
       console.error("Hygraph membership save failed:", hygraphError.message);
@@ -449,6 +502,12 @@ router.post("/", async (req, res) => {
         [clerkUser?.firstName, clerkUser?.lastName].filter(Boolean).join(" ") ||
         clerkUser?.username ||
         "Member";
+      let includedItems = [];
+      try {
+        includedItems = await fetchIssueItemsForEmail(selectedIssueIds);
+      } catch (issueError) {
+        console.warn("Subscription email issue fetch failed:", issueError?.message);
+      }
 
       await sendSubscriptionEmails({
         userEmail,
@@ -462,6 +521,7 @@ router.post("/", async (req, res) => {
         paymentId,
         subscriptionId: resolvedSubscriptionId,
         orderId,
+        includedItems,
       });
     } catch (emailError) {
       console.error("Subscription email send failed:", emailError.message);

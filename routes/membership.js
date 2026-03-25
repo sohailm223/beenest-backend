@@ -24,6 +24,54 @@ function addDaysIso(dateIso, days = 365) {
   return d.toISOString();
 }
 
+async function fetchIssueItemsForEmail(issueIds = []) {
+  const ids = Array.from(new Set((Array.isArray(issueIds) ? issueIds : []).filter(Boolean)));
+  if (!ids.length || !process.env.HYGRAPH_API || !process.env.HYGRAPH_TOKEN) return [];
+
+  const response = await fetch(process.env.HYGRAPH_API, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${process.env.HYGRAPH_TOKEN}`,
+    },
+    body: JSON.stringify({
+      query: `
+        query IssueItemsForEmail($ids: [ID!]) {
+          magazines(where: { id_in: $ids }, first: 50) {
+            id
+            name
+            slug
+            price
+            magazineType
+            featuredImage {
+              url
+            }
+          }
+        }
+      `,
+      variables: { ids },
+    }),
+  });
+
+  const payload = await response.json();
+  if (!response.ok || payload?.errors?.length) {
+    throw new Error("Unable to fetch issue details for subscription email");
+  }
+
+  const byId = new Map((payload?.data?.magazines || []).map((item) => [item.id, item]));
+  return ids
+    .map((id) => byId.get(id))
+    .filter(Boolean)
+    .map((issue) => ({
+      name: issue.name,
+      slug: issue.slug,
+      price: Number(issue.price || 0),
+      featuredImage: issue.featuredImage || null,
+      type: "subscription_issue",
+      magazineType: issue.magazineType || "issue",
+    }));
+}
+
 async function upsertHygraphMembership({
   clerkId,
   planKey,
@@ -319,6 +367,9 @@ router.post("/verify-order", async (req, res) => {
       printEntitled: plan.printEntitled,
       digitalEntitled: plan.digitalEntitled,
       canShare: plan.canShare,
+      sharedReaderLimit: 100,
+      sharedReaderUsed: 0,
+      sharedReaders: [],
       freeOrderUsedByIssue: {},
     };
 
@@ -355,6 +406,12 @@ router.post("/verify-order", async (req, res) => {
         [user?.firstName, user?.lastName].filter(Boolean).join(" ") ||
         user?.username ||
         "Member";
+      let includedItems = [];
+      try {
+        includedItems = await fetchIssueItemsForEmail(entitlements.issueIds || []);
+      } catch (issueError) {
+        console.warn("Subscription email issue fetch failed:", issueError?.message);
+      }
       await sendSubscriptionEmails({
         userEmail,
         userName,
@@ -367,6 +424,7 @@ router.post("/verify-order", async (req, res) => {
         paymentId: razorpay_payment_id,
         subscriptionId: razorpay_order_id,
         orderId: razorpay_order_id,
+        includedItems,
       });
     } catch (emailError) {
       console.error("Membership email send failed:", emailError?.message);

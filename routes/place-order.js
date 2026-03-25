@@ -31,6 +31,60 @@ function isActiveSubscription(subscription = {}) {
   return status === "active" && expiresAt > Date.now();
 }
 
+async function hydrateCartItemsForEmail(items = []) {
+  const safeItems = Array.isArray(items) ? items : [];
+  const ids = Array.from(new Set(safeItems.map((item) => item?.id).filter(Boolean)));
+  if (!ids.length) return safeItems;
+
+  const response = await fetch(process.env.HYGRAPH_API, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${process.env.HYGRAPH_TOKEN}`,
+    },
+    body: JSON.stringify({
+      query: `
+        query CartItemsForEmail($ids: [ID!]) {
+          magazines(where: { id_in: $ids }, first: 100) {
+            id
+            name
+            slug
+            price
+            magazineType
+            featuredImage {
+              url
+            }
+          }
+        }
+      `,
+      variables: { ids },
+    }),
+  });
+
+  const payload = await response.json();
+  if (!response.ok || payload?.errors?.length) {
+    throw new Error("Unable to hydrate order items for email");
+  }
+
+  const byId = new Map((payload?.data?.magazines || []).map((mag) => [mag.id, mag]));
+
+  return safeItems.map((item) => {
+    const hydrated = byId.get(item?.id) || {};
+    return {
+      ...item,
+      name: hydrated?.name || item?.name || "Magazine",
+      slug: hydrated?.slug || item?.slug || "",
+      price: Number(item?.price || hydrated?.price || 0),
+      featuredImage: hydrated?.featuredImage || item?.featuredImage || null,
+      magazineType: hydrated?.magazineType || item?.magazineType || "issue",
+      type:
+        String(hydrated?.magazineType || item?.magazineType || "").toLowerCase() === "articlepaid"
+          ? "paid_article"
+          : "print_issue",
+    };
+  });
+}
+
 router.post("/place-order", async (req, res) => {
   const { clerkId, cartItems, shippingInfo, total, paymentMethod } = req.body;
 
@@ -255,12 +309,19 @@ router.post("/place-order", async (req, res) => {
     });
 
     // 6) Send customer + admin email
+    let emailItems = cartItems;
+    try {
+      emailItems = await hydrateCartItemsForEmail(cartItems);
+    } catch (emailItemError) {
+      console.warn("Order email item hydration failed:", emailItemError?.message);
+    }
+
     await sendOrderEmails({
       userEmail: shippingInfo.email,
       userName: shippingInfo.name,
       orderId,
       totalAmount: normalizedTotal,
-      cartItems,
+      cartItems: emailItems,
       shippingInfo,
       paymentMethod,
     });

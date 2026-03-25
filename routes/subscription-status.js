@@ -20,6 +20,9 @@ router.post("/subscription-status", async (req, res) => {
         issueIds: [],
         accessCode: null,
         canShare: false,
+        sharedReaderLimit: 0,
+        sharedReaderUsed: 0,
+        sharedReaders: [],
       },
     });
   } catch (error) {
