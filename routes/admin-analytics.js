@@ -301,6 +301,125 @@ async function createHygraphMembership({
   return membershipId;
 }
 
+async function fetchHygraphMembershipsForClerk(clerkId) {
+  const data = await hygraphRequest(
+    `
+      query MembershipsForClerk($clerkId: String!) {
+        memberships(
+          where: { customer_some: { clerkId_in: [$clerkId] } }
+          first: 50
+          orderBy: startDate_DESC
+        ) {
+          id
+          planId
+          planStatus
+          startDate
+          endDate
+          razorpayPaymentId
+          razorpaySubscriptionId
+        }
+      }
+    `,
+    { clerkId }
+  );
+
+  return Array.isArray(data?.memberships) ? data.memberships : [];
+}
+
+async function updateHygraphMembership({
+  membershipId,
+  clerkId,
+  planKey,
+  amount,
+  paymentId,
+  subscriptionId,
+  startedAt,
+  expiresAt,
+  issueIds = [],
+}) {
+  await hygraphRequest(
+    `
+      mutation UpdateMembershipPlan(
+        $membershipId: ID!
+        $clerkId: String!
+        $paymentId: String!
+        $subscriptionId: String!
+        $planId: String!
+        $amount: Int!
+        $planStatus: UserPlanStatus!
+        $startDate: Date!
+        $endDate: DateTime
+        $selectedIssues: [MagazineWhereUniqueInput!]
+      ) {
+        updateMembership(
+          where: { id: $membershipId }
+          data: {
+            razorpayPaymentId: $paymentId
+            razorpaySubscriptionId: $subscriptionId
+            planId: $planId
+            amount: $amount
+            planStatus: $planStatus
+            startDate: $startDate
+            endDate: $endDate
+            selectedIssues: { set: $selectedIssues }
+            customer: { connect: { clerkId: $clerkId } }
+          }
+        ) {
+          id
+        }
+        publishMembership(where: { id: $membershipId }) {
+          id
+        }
+      }
+    `,
+    {
+      membershipId,
+      clerkId,
+      paymentId,
+      subscriptionId,
+      planId: planKey,
+      amount: Number(amount || 0),
+      planStatus: "active",
+      startDate: dateOnly(startedAt),
+      endDate: expiresAt,
+      selectedIssues: issueIds.map((id) => ({ id })),
+    }
+  );
+}
+
+async function cancelOtherActiveMemberships({ clerkId, keepMembershipId, cancelledAt }) {
+  const memberships = await fetchHygraphMembershipsForClerk(clerkId);
+  const rowsToCancel = memberships.filter((membership) => {
+    const status = String(membership?.planStatus || "").toLowerCase();
+    return status === "active" && membership?.id && membership.id !== keepMembershipId;
+  });
+
+  for (const membership of rowsToCancel) {
+    await hygraphRequest(
+      `
+        mutation CancelMembership($id: ID!, $endDate: DateTime) {
+          updateMembership(
+            where: { id: $id }
+            data: {
+              planStatus: cancelled
+              endDate: $endDate
+            }
+          ) {
+            id
+          }
+          publishMembership(where: { id: $id }) {
+            id
+          }
+        }
+      `,
+      {
+        id: membership.id,
+        endDate: cancelledAt,
+      }
+    );
+  }
+}
+
 function getAdminAllowlist() {
   const raw = String(process.env.ADMIN_ANALYTICS_CLERK_IDS || "").trim();
   if (!raw) return [];
@@ -531,6 +650,211 @@ router.post("/admin/manual-subscriber", async (req, res) => {
     return res.status(500).json({
       success: false,
       error: error?.message || "Unable to add subscriber manually",
+    });
+  }
+});
+
+router.post("/admin/change-subscriber-plan", async (req, res) => {
+  try {
+    const { adminClerkId, email, planKey, startDate } = req.body || {};
+
+    if (!adminClerkId) {
+      return res.status(400).json({ success: false, error: "adminClerkId is required" });
+    }
+    if (!email || !planKey) {
+      return res.status(400).json({ success: false, error: "email and planKey are required" });
+    }
+    if (!(await canAccessAnalytics(adminClerkId))) {
+      return res.status(403).json({ success: false, error: "You do not have access to this action" });
+    }
+
+    const normalizedEmail = String(email || "").trim().toLowerCase();
+    const requestedPlanKey = String(planKey || "").trim().toLowerCase().replace(/[\s-]+/g, "_");
+    if (!MEMBERSHIP_PLAN_CATALOG[requestedPlanKey]) {
+      return res.status(400).json({ success: false, error: "Invalid planKey" });
+    }
+
+    const user = await findUserByEmail(normalizedEmail);
+    if (!user?.id) {
+      return res.status(404).json({ success: false, error: "Subscriber not found for this email" });
+    }
+
+    const clerkId = user.id;
+    const normalizedPlanKey = normalizePlanKey(requestedPlanKey);
+    const plan = getPlanConfig(normalizedPlanKey);
+    const parsedStartDate = parseDateOnlyInput(startDate) || new Date();
+    const startedAt = new Date(
+      Date.UTC(
+        parsedStartDate.getUTCFullYear(),
+        parsedStartDate.getUTCMonth(),
+        parsedStartDate.getUTCDate(),
+        0,
+        0,
+        0,
+        0
+      )
+    ).toISOString();
+    const expiresAt = addDaysIso(startedAt, Number(plan.validityDays || 365));
+    const entitlements = await computeIssueEntitlements(plan.key, []);
+
+    const existingPublicMetadata = user?.publicMetadata || {};
+    const existingSubscription = existingPublicMetadata?.subscription || {};
+    const hygraphMemberships = await fetchHygraphMembershipsForClerk(clerkId);
+    const now = Date.now();
+    const activeMembership =
+      hygraphMemberships.find((membership) => {
+        const status = String(membership?.planStatus || "").toLowerCase();
+        if (status !== "active") return false;
+        if (!membership?.endDate) return true;
+        return new Date(membership.endDate).getTime() > now;
+      }) || null;
+    const latestMembership = activeMembership || hygraphMemberships[0] || null;
+
+    const nowStamp = Date.now();
+    const suffix = Math.random().toString(36).slice(2, 8);
+    const paymentId =
+      existingSubscription?.paymentId ||
+      latestMembership?.razorpayPaymentId ||
+      `manual_change_pay_${nowStamp}_${suffix}`;
+    const subscriptionId =
+      existingSubscription?.subscriptionId ||
+      existingSubscription?.orderId ||
+      latestMembership?.razorpaySubscriptionId ||
+      `manual_change_sub_${nowStamp}_${suffix}`;
+
+    const customerName =
+      user?.fullName ||
+      [user?.firstName, user?.lastName].filter(Boolean).join(" ") ||
+      getDisplayNameFromEmail(normalizedEmail);
+
+    await ensureHygraphCustomer({
+      clerkId,
+      email: getPrimaryEmailAddress(user) || normalizedEmail,
+      name: customerName,
+    });
+
+    let membershipId = latestMembership?.id || null;
+    if (membershipId) {
+      await updateHygraphMembership({
+        membershipId,
+        clerkId,
+        planKey: plan.key,
+        amount: Number(plan.amount || 0),
+        paymentId,
+        subscriptionId,
+        startedAt,
+        expiresAt,
+        issueIds: entitlements.issueIds,
+      });
+    } else {
+      membershipId = await createHygraphMembership({
+        clerkId,
+        planKey: plan.key,
+        amount: Number(plan.amount || 0),
+        paymentId,
+        subscriptionId,
+        startedAt,
+        expiresAt,
+        issueIds: entitlements.issueIds,
+      });
+    }
+
+    await cancelOtherActiveMemberships({
+      clerkId,
+      keepMembershipId: membershipId,
+      cancelledAt: startedAt,
+    });
+
+    const existingSharedReaders = Array.isArray(existingSubscription?.sharedReaders)
+      ? existingSubscription.sharedReaders
+      : [];
+    const sharedReaders = plan.canShare ? existingSharedReaders : [];
+    const sharedReaderLimit = Math.max(1, Number(existingSubscription?.sharedReaderLimit || 100));
+
+    const subscriptionMetadata = {
+      ...existingSubscription,
+      status: "active",
+      plan: plan.label,
+      planKey: plan.key,
+      planType: plan.planType,
+      durationType: plan.durationType,
+      startedAt,
+      expiresAt,
+      accessType: "owner",
+      paymentProvider: existingSubscription?.paymentProvider || "manual",
+      paymentId,
+      orderId: subscriptionId,
+      subscriptionId,
+      issueSlotCount: entitlements.slotCount,
+      selectedIssueIds: entitlements.issueIds,
+      printEntitled: plan.printEntitled,
+      digitalEntitled: plan.digitalEntitled,
+      canShare: plan.canShare,
+      sharedReaderLimit,
+      sharedReaderUsed: sharedReaders.length,
+      sharedReaders,
+      freeOrderUsedByIssue: {},
+    };
+
+    await clerkClient.users.updateUser(clerkId, {
+      publicMetadata: {
+        ...existingPublicMetadata,
+        subscription: subscriptionMetadata,
+      },
+    });
+
+    try {
+      const primaryEmail = getPrimaryEmailAddress(user) || normalizedEmail;
+      let includedItems = [];
+      try {
+        includedItems = await fetchIssueItemsForEmail(entitlements.issueIds || []);
+      } catch (issueError) {
+        console.warn("Plan change email issue fetch failed:", issueError?.message);
+      }
+
+      await sendSubscriptionEmails({
+        userEmail: primaryEmail,
+        userName: customerName,
+        clerkId,
+        plan: plan.label,
+        status: "active",
+        startedAt,
+        expiresAt,
+        amount: Number(plan.amount || 0),
+        paymentId,
+        subscriptionId,
+        orderId: subscriptionId,
+        includedItems,
+      });
+    } catch (emailError) {
+      console.error("Plan change email send failed:", emailError?.message);
+    }
+
+    return res.json({
+      success: true,
+      message: "Subscriber plan changed successfully",
+      data: {
+        membershipId,
+        user: {
+          clerkId,
+          email: getPrimaryEmailAddress(user) || normalizedEmail,
+          name: customerName,
+        },
+        subscription: {
+          planKey: plan.key,
+          planLabel: plan.label,
+          startDate: dateOnly(startedAt),
+          endDate: dateOnly(expiresAt),
+          amount: Number(plan.amount || 0),
+          status: "active",
+        },
+      },
+    });
+  } catch (error) {
+    console.error("manual change subscriber plan error:", error?.message || error);
+    return res.status(500).json({
+      success: false,
+      error: error?.message || "Unable to change subscriber plan",
     });
   }
 });
