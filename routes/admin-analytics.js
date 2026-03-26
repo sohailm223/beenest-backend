@@ -859,6 +859,67 @@ router.post("/admin/change-subscriber-plan", async (req, res) => {
   }
 });
 
+router.post("/admin/subscriber-plan", async (req, res) => {
+  try {
+    const { adminClerkId, email } = req.body || {};
+
+    if (!adminClerkId) {
+      return res.status(400).json({ success: false, error: "adminClerkId is required" });
+    }
+    if (!email) {
+      return res.status(400).json({ success: false, error: "email is required" });
+    }
+    if (!(await canAccessAnalytics(adminClerkId))) {
+      return res.status(403).json({ success: false, error: "You do not have access to this action" });
+    }
+
+    const normalizedEmail = String(email || "").trim().toLowerCase();
+    const user = await findUserByEmail(normalizedEmail);
+    if (!user?.id) {
+      return res.status(404).json({ success: false, error: "Subscriber not found for this email" });
+    }
+
+    const subscription = user?.publicMetadata?.subscription || {};
+    const userName =
+      user?.fullName ||
+      [user?.firstName, user?.lastName].filter(Boolean).join(" ") ||
+      getDisplayNameFromEmail(normalizedEmail);
+
+    return res.json({
+      success: true,
+      data: {
+        user: {
+          clerkId: user.id,
+          email: getPrimaryEmailAddress(user) || normalizedEmail,
+          name: userName,
+        },
+        subscription: {
+          status: String(subscription?.status || "inactive"),
+          plan: String(subscription?.plan || ""),
+          planKey: String(subscription?.planKey || ""),
+          planType: String(subscription?.planType || ""),
+          durationType: String(subscription?.durationType || ""),
+          startedAt: subscription?.startedAt || null,
+          expiresAt: subscription?.expiresAt || null,
+          issueSlotCount: Number(subscription?.issueSlotCount || 0),
+          selectedIssueIds: Array.isArray(subscription?.selectedIssueIds)
+            ? subscription.selectedIssueIds
+            : [],
+          printEntitled: Boolean(subscription?.printEntitled),
+          digitalEntitled: Boolean(subscription?.digitalEntitled),
+          canShare: Boolean(subscription?.canShare),
+        },
+      },
+    });
+  } catch (error) {
+    console.error("admin subscriber-plan lookup error:", error?.message || error);
+    return res.status(500).json({
+      success: false,
+      error: error?.message || "Unable to fetch subscriber plan",
+    });
+  }
+});
+
 router.post("/admin/can-access", async (req, res) => {
   try {
     const { clerkId } = req.body || {};
