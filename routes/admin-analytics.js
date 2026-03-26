@@ -262,7 +262,7 @@ async function createHygraphMembership({
             startDate: $startDate
             endDate: $endDate
             selectedIssues: { connect: $selectedIssues }
-            customer: { connect: { clerkId: $clerkId } }
+            customer: { connect: { where: { clerkId: $clerkId } } }
           }
         ) {
           id
@@ -362,7 +362,7 @@ async function updateHygraphMembership({
             startDate: $startDate
             endDate: $endDate
             selectedIssues: { set: $selectedIssues }
-            customer: { connect: { clerkId: $clerkId } }
+            customer: { connect: { where: { clerkId: $clerkId } } }
           }
         ) {
           id
