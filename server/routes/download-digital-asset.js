@@ -26,8 +26,16 @@ async function hygraphRequest(query, variables = {}) {
 
 function getBearerToken(req) {
   const authHeader = String(req.headers.authorization || "");
-  if (!authHeader.toLowerCase().startsWith("bearer ")) return "";
-  return authHeader.slice(7).trim();
+  if (authHeader.toLowerCase().startsWith("bearer ")) {
+    return authHeader.slice(7).trim();
+  }
+
+  const queryToken =
+    req.query?.token ||
+    req.query?.authToken ||
+    req.query?.access_token ||
+    "";
+  return String(Array.isArray(queryToken) ? queryToken[0] : queryToken).trim();
 }
 
 async function getClerkIdFromRequest(req) {

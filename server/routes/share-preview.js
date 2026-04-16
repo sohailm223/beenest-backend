@@ -15,6 +15,12 @@ const escapeHtml = (value = "") =>
     .replaceAll("'", "&#39;");
 
 const stripHtml = (value = "") => String(value).replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+const normalizeImageUrl = (value = "") => {
+  const image = String(value || "").trim();
+  if (!image) return "";
+  if (/^https?:\/\//i.test(image)) return image;
+  return `${FRONTEND_BASE_URL}${image.startsWith("/") ? "" : "/"}${image}`;
+};
 const clampText = (value = "", maxLength = 60) => {
   const text = String(value || "").trim();
   if (text.length <= maxLength) return text;
@@ -30,9 +36,9 @@ const buildSeoTitle = (rawTitle) => {
 };
 
 const withOgImageRatio = (rawImage) => {
-  const image = String(rawImage || "").trim();
+  const image = normalizeImageUrl(rawImage);
   if (!image) return DEFAULT_IMAGE;
-  if (!/graphassets\.com/i.test(image)) return DEFAULT_IMAGE;
+  if (!/graphassets\.com/i.test(image)) return image;
   const separator = image.includes("?") ? "&" : "?";
   return `${image}${separator}width=1200&height=630&fit=crop&fm=jpg&q=80`;
 };
