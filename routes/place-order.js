@@ -249,6 +249,8 @@ router.post("/place-order", async (req, res) => {
 
     // 4) Create order items
     for (const item of cartItems) {
+      const quantity = Math.max(1, Number(item?.quantity || 1));
+      const itemTotal = isFreeSubscriptionOrder ? 0 : Number(item?.price || 0) * quantity;
       await fetch(process.env.HYGRAPH_API, {
         method: "POST",
         headers: {
@@ -271,8 +273,8 @@ router.post("/place-order", async (req, res) => {
             }
           `,
           variables: {
-            quantity: 1,
-            total: isFreeSubscriptionOrder ? 0 : item.price,
+            quantity,
+            total: itemTotal,
             magazineId: item.id,
             orderId,
           },

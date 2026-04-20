@@ -230,7 +230,7 @@ async function ensureHygraphCustomer({ clerkId, email, name }) {
 }
 
 async function createHygraphMembership({
-  clerkId,
+  customerId,
   planKey,
   amount,
   paymentId,
@@ -242,7 +242,7 @@ async function createHygraphMembership({
   const created = await hygraphRequest(
     `
       mutation CreateMembership(
-        $clerkId: String!
+        $customerId: ID!
         $paymentId: String!
         $subscriptionId: String!
         $planId: String!
@@ -262,7 +262,7 @@ async function createHygraphMembership({
             startDate: $startDate
             endDate: $endDate
             selectedIssues: { connect: $selectedIssues }
-            customer: { connect: { where: { clerkId: $clerkId } } }
+            customer: { connect: { id: $customerId } }
           }
         ) {
           id
@@ -270,7 +270,7 @@ async function createHygraphMembership({
       }
     `,
     {
-      clerkId,
+      customerId,
       paymentId,
       subscriptionId,
       planId: planKey,
@@ -328,7 +328,7 @@ async function fetchHygraphMembershipsForClerk(clerkId) {
 
 async function updateHygraphMembership({
   membershipId,
-  clerkId,
+  customerId,
   planKey,
   amount,
   paymentId,
@@ -341,7 +341,7 @@ async function updateHygraphMembership({
     `
       mutation UpdateMembershipPlan(
         $membershipId: ID!
-        $clerkId: String!
+        $customerId: ID!
         $paymentId: String!
         $subscriptionId: String!
         $planId: String!
@@ -362,7 +362,7 @@ async function updateHygraphMembership({
             startDate: $startDate
             endDate: $endDate
             selectedIssues: { set: $selectedIssues }
-            customer: { connect: { where: { clerkId: $clerkId } } }
+            customer: { connect: { id: $customerId } }
           }
         ) {
           id
@@ -374,7 +374,7 @@ async function updateHygraphMembership({
     `,
     {
       membershipId,
-      clerkId,
+      customerId,
       paymentId,
       subscriptionId,
       planId: planKey,
@@ -548,14 +548,14 @@ router.post("/admin/manual-subscriber", async (req, res) => {
       [user?.firstName, user?.lastName].filter(Boolean).join(" ") ||
       getDisplayNameFromEmail(normalizedEmail);
 
-    await ensureHygraphCustomer({
+    const hygraphCustomer = await ensureHygraphCustomer({
       clerkId,
       email: getPrimaryEmailAddress(user) || normalizedEmail,
       name: customerName,
     });
 
     const membershipId = await createHygraphMembership({
-      clerkId,
+      customerId: hygraphCustomer.id,
       planKey: plan.key,
       amount: Number(plan.amount || 0),
       paymentId,
@@ -727,7 +727,7 @@ router.post("/admin/change-subscriber-plan", async (req, res) => {
       [user?.firstName, user?.lastName].filter(Boolean).join(" ") ||
       getDisplayNameFromEmail(normalizedEmail);
 
-    await ensureHygraphCustomer({
+    const hygraphCustomer = await ensureHygraphCustomer({
       clerkId,
       email: getPrimaryEmailAddress(user) || normalizedEmail,
       name: customerName,
@@ -737,7 +737,7 @@ router.post("/admin/change-subscriber-plan", async (req, res) => {
     if (membershipId) {
       await updateHygraphMembership({
         membershipId,
-        clerkId,
+        customerId: hygraphCustomer.id,
         planKey: plan.key,
         amount: Number(plan.amount || 0),
         paymentId,
@@ -748,7 +748,7 @@ router.post("/admin/change-subscriber-plan", async (req, res) => {
       });
     } else {
       membershipId = await createHygraphMembership({
-        clerkId,
+        customerId: hygraphCustomer.id,
         planKey: plan.key,
         amount: Number(plan.amount || 0),
         paymentId,
