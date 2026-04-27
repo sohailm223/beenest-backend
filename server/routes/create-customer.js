@@ -4,7 +4,7 @@ import fetch from "node-fetch"; // Not needed in Node 18+, but safe here
 const router = express.Router();
 
 router.post("/create-customer", async (req, res) => {
-  const { clerkId, email, name, imageUrl } = req.body;
+  const { clerkId, email, name } = req.body;
 
   console.log("🔥 POST /create-customer hit");
   console.log("📦 Incoming Clerk user data:", req.body);
@@ -50,13 +50,12 @@ router.post("/create-customer", async (req, res) => {
       },
       body: JSON.stringify({
         query: `
-          mutation CreateCustomer($clerkId: String!, $email: String!, $name: String!, $imageUrl: String) {
+          mutation CreateCustomer($clerkId: String!, $email: String!, $name: String!) {
             createCustomer(data: {
               clerkId: $clerkId,
               email: $email,
               name: $name,
-              imageUrl: $imageUrl
-                subscriptionStatus: notAvailable
+              subscriptionStatus: notAvailable
             }) {
               id
               name
@@ -65,7 +64,7 @@ router.post("/create-customer", async (req, res) => {
             }
           }
         `,
-        variables: { clerkId, email, name, imageUrl },
+        variables: { clerkId, email, name },
       }),
     });
 

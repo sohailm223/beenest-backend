@@ -14,7 +14,7 @@ function hygraphRequest(query, variables) {
   });
 }
 
-async function getOrCreateCustomer({ clerkId, email, name, imageUrl }) {
+async function getOrCreateCustomer({ clerkId, email, name }) {
   const findRes = await hygraphRequest(
     `
       query GetCustomer($clerkId: String!) {
@@ -39,14 +39,12 @@ async function getOrCreateCustomer({ clerkId, email, name, imageUrl }) {
         $clerkId: String!
         $email: String!
         $name: String!
-        $imageUrl: String
       ) {
         createCustomer(
           data: {
             clerkId: $clerkId
             email: $email
             name: $name
-            imageUrl: $imageUrl
             subscriptionStatus: notAvailable
           }
         ) {
@@ -65,7 +63,6 @@ async function getOrCreateCustomer({ clerkId, email, name, imageUrl }) {
       clerkId,
       email: safeEmail,
       name: safeName,
-      imageUrl: imageUrl || null,
     }
   );
 
@@ -78,7 +75,7 @@ async function getOrCreateCustomer({ clerkId, email, name, imageUrl }) {
 }
 
 router.post("/add-to-cart", async (req, res) => {
-  const { clerkId, magazineId, email, name, imageUrl } = req.body;
+  const { clerkId, magazineId, email, name } = req.body;
   console.log("Add to Cart:", { clerkId, magazineId });
 
   if (!clerkId || !magazineId) {
@@ -90,7 +87,6 @@ router.post("/add-to-cart", async (req, res) => {
       clerkId,
       email,
       name,
-      imageUrl,
     });
 
     if (!customerId) {
